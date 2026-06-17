@@ -98,7 +98,7 @@ function getUserRecord(userId) {
   return data.verifiedUsers[userId];
 }
 
-// green theme (from your image)
+// green theme
 const THEME_COLOR = 0x00c853;
 
 // helper: boxed embed
@@ -114,44 +114,45 @@ function boxEmbed({ title, description, fields = [], footer }) {
   return embed;
 }
 
-// captcha images: 30 IDs with mapped answers
-// we generate a simple image per ID and use a fixed answer map
-const captchaAnswers = {};
+// captcha: 30 equation images with known answers
+const captchaMap = {};
 for (let i = 1; i <= 30; i++) {
-  // example: answer = (i % 9) + 1 (1–9)
-  captchaAnswers[i] = (i % 9) + 1;
+  const a = (i % 5) + 1; // 1–5
+  const b = ((i * 2) % 5) + 1; // 1–5
+  captchaMap[i] = a + b;
 }
 
 function generateCaptchaImage(id) {
+  const a = (id % 5) + 1;
+  const b = ((id * 2) % 5) + 1;
+  const text = `${a} + ${b} = ?`;
+
   const width = 400;
   const height = 200;
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext('2d');
 
-  // background
+  // light green background
   ctx.fillStyle = '#f5fff7';
   ctx.fillRect(0, 0, width, height);
 
-  // big ID text
-  ctx.font = 'bold 80px Sans';
+  // equation text
+  ctx.font = 'bold 72px Sans';
   ctx.fillStyle = '#00c853';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(`Image ${id}`, width / 2, height / 2 - 30);
+  ctx.fillText(text, width / 2, height / 2);
 
-  // small hint text
-  ctx.font = '24px Sans';
-  ctx.fillStyle = '#111111';
-  ctx.fillText('Enter the correct number for this image.', width / 2, height / 2 + 40);
+  // subtle border
+  ctx.strokeStyle = '#00c853';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(10, 10, width - 20, height - 20);
 
   return canvas.toBuffer();
 }
 
-// in-memory captcha sessions: userId -> { answer }
+// in-memory captcha sessions: userId -> { answer, guildId }
 const captchaSessions = new Map();
-
-// setup wizard sessions: userId -> { step, guildId, channelId, data }
-const setupSessions = new Map();
 
 // discord client
 const client = new Client({
@@ -170,7 +171,7 @@ client.commands = new Collection();
 // slash commands
 const setupCommand = new SlashCommandBuilder()
   .setName('setup')
-  .setDescription('Run the Veri setup wizard.')
+  .setDescription('Initial setup for Veri.')
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 const settingsCommand = new SlashCommandBuilder()
@@ -284,6 +285,33 @@ client.once('ready', async () => {
   }
 });
 
+// when bot joins a new guild: send hi message, delete after 5 minutes
+client.on('guildCreate', async guild => {
+  try {
+    const systemChannel =
+      guild.systemChannel ||
+      guild.channels.cache.find(
+        c => c.type === ChannelType.GuildText && c.permissionsFor(guild.members.me).has('SendMessages')
+      );
+
+    if (!systemChannel) return;
+
+    const embed = boxEmbed({
+      title: 'Veri Joined',
+      description:
+        'Hi, I am **Veri**.\n\nI provide DM-based captcha verification and honeypot protection for your server.\n\nRun `/setup` to create the verification, logs, and honeypot channels automatically.',
+      footer: 'Veri System'
+    });
+
+    const msg = await systemChannel.send({ embeds: [embed] });
+    setTimeout(() => {
+      msg.delete().catch(() => {});
+    }, 5 * 60 * 1000); // 5 minutes
+  } catch {
+    // ignore
+  }
+});
+
 // guild member join: auto-verify if globally verified
 client.on('guildMemberAdd', async member => {
   const cfg = getGuildConfig(member.guild.id);
@@ -303,7 +331,7 @@ client.on('guildMemberAdd', async member => {
     const embed = boxEmbed({
       title: 'Veri Auto Verification',
       description:
-        'You were already verified using Veri in another server. You have been verified here automatically.',
+        'You were already verified using Veri in another server.\nYou have been verified here automatically.',
       footer: 'Veri System'
     });
 
@@ -316,162 +344,6 @@ client.on('guildMemberAdd', async member => {
     );
   }
 });
-
-// setup wizard helpers
-function buildSetupEmbed(step, cfg, guildName) {
-  let title = 'Veri Setup Wizard';
-  let description = '';
-  const fields = [];
-
-  if (step === 0) {
-    description =
-      'Welcome to Veri.\n\nThis wizard will configure basic settings for your server.\nUse the buttons below to move between steps.';
-  } else if (step === 1) {
-    description =
-      'Step 1: Verification Channel\n\nThe channel where the Verify button and “Check DMs” messages will appear.';
-    fields.push({
-      name: 'Current',
-      value: cfg.verificationChannelId ? `<#${cfg.verificationChannelId}>` : 'Not set',
-      inline: false
-    });
-  } else if (step === 2) {
-    description =
-      'Step 2: Logs Channel\n\nThe channel where Veri will send logs for verification, honeypot, and system events.';
-    fields.push({
-      name: 'Current',
-      value: cfg.logsChannelId ? `<#${cfg.logsChannelId}>` : 'Not set',
-      inline: false
-    });
-  } else if (step === 3) {
-    description =
-      'Step 3: Honeypot Channel\n\nMessages sent in this channel will trigger honeypot punishment.';
-    fields.push({
-      name: 'Current',
-      value: cfg.honeypotChannelId ? `<#${cfg.honeypotChannelId}>` : 'Not set',
-      inline: false
-    });
-  } else if (step === 4) {
-    description =
-      'Step 4: Verification Role\n\nThis role will be given to users after they pass verification.';
-    fields.push({
-      name: 'Current',
-      value: cfg.verificationRoleId ? `<@&${cfg.verificationRoleId}>` : 'Not set',
-      inline: false
-    });
-  } else if (step === 5) {
-    description =
-      'Step 5: Honeypot Punishment\n\nChoose how Veri should punish users who trigger the honeypot.';
-    fields.push(
-      {
-        name: 'Punishment',
-        value: cfg.honeypotPunishment,
-        inline: true
-      },
-      {
-        name: 'Timeout Minutes',
-        value: String(cfg.honeypotTimeoutMinutes),
-        inline: true
-      }
-    );
-  } else if (step === 6) {
-    description =
-      'Step 6: Features\n\nToggle captcha and honeypot features on or off.';
-    fields.push(
-      {
-        name: 'Captcha Enabled',
-        value: cfg.captchaEnabled ? 'Yes' : 'No',
-        inline: true
-      },
-      {
-        name: 'Honeypot Enabled',
-        value: cfg.honeypotEnabled ? 'Yes' : 'No',
-        inline: true
-      }
-    );
-  } else if (step === 7) {
-    description =
-      'Review your settings and press Finish to apply them.\n\nYou can change them later with /settings.';
-    fields.push(
-      {
-        name: 'Verification Channel',
-        value: cfg.verificationChannelId ? `<#${cfg.verificationChannelId}>` : 'Not set',
-        inline: false
-      },
-      {
-        name: 'Logs Channel',
-        value: cfg.logsChannelId ? `<#${cfg.logsChannelId}>` : 'Not set',
-        inline: false
-      },
-      {
-        name: 'Honeypot Channel',
-        value: cfg.honeypotChannelId ? `<#${cfg.honeypotChannelId}>` : 'Not set',
-        inline: false
-      },
-      {
-        name: 'Verification Role',
-        value: cfg.verificationRoleId ? `<@&${cfg.verificationRoleId}>` : 'Not set',
-        inline: false
-      },
-      {
-        name: 'Honeypot Punishment',
-        value: cfg.honeypotPunishment,
-        inline: true
-      },
-      {
-        name: 'Timeout Minutes',
-        value: String(cfg.honeypotTimeoutMinutes),
-        inline: true
-      },
-      {
-        name: 'Captcha Enabled',
-        value: cfg.captchaEnabled ? 'Yes' : 'No',
-        inline: true
-      },
-      {
-        name: 'Honeypot Enabled',
-        value: cfg.honeypotEnabled ? 'Yes' : 'No',
-        inline: true
-      }
-    );
-  }
-
-  return boxEmbed({
-    title,
-    description,
-    fields,
-    footer: `Server: ${guildName}`
-  });
-}
-
-function buildSetupButtons(step) {
-  const row = new ActionRowBuilder();
-
-  const back = new ButtonBuilder()
-    .setCustomId('setup_back')
-    .setLabel('Back')
-    .setStyle(ButtonStyle.Secondary)
-    .setDisabled(step === 0);
-
-  const next = new ButtonBuilder()
-    .setCustomId('setup_next')
-    .setLabel('Next')
-    .setStyle(ButtonStyle.Primary)
-    .setDisabled(step >= 7);
-
-  const finish = new ButtonBuilder()
-    .setCustomId('setup_finish')
-    .setLabel('Finish')
-    .setStyle(ButtonStyle.Success)
-    .setDisabled(step < 7);
-
-  const cancel = new ButtonBuilder()
-    .setCustomId('setup_cancel')
-    .setLabel('Cancel')
-    .setStyle(ButtonStyle.Danger);
-
-  row.addComponents(back, next, finish, cancel);
-  return [row];
-}
 
 // interaction handler
 client.on('interactionCreate', async interaction => {
@@ -492,40 +364,71 @@ client.on('interactionCreate', async interaction => {
       const guild = interaction.guild;
       const cfg = getGuildConfig(guild.id);
 
-      // default: use current channel as verification channel if not set
-      if (!cfg.verificationChannelId) cfg.verificationChannelId = interaction.channel.id;
-      if (!cfg.logsChannelId) cfg.logsChannelId = interaction.channel.id;
+      // create channels automatically
+      const verificationChannel = await guild.channels.create({
+        name: 'verification',
+        type: ChannelType.GuildText,
+        reason: 'Veri setup: verification channel'
+      });
 
-      const dm = await interaction.user.createDM().catch(() => null);
-      if (!dm) {
-        const embed = boxEmbed({
-          title: 'Setup Failed',
-          description: 'I could not open a DM with you. Please enable DMs and try again.',
-          footer: 'Veri System'
-        });
-        return interaction.reply({ embeds: [embed], ephemeral: true });
-      }
+      const logsChannel = await guild.channels.create({
+        name: 'veri-logs',
+        type: ChannelType.GuildText,
+        reason: 'Veri setup: logs channel'
+      });
 
-      const session = {
-        step: 0,
-        guildId: guild.id,
-        channelId: interaction.channel.id
-      };
-      setupSessions.set(interaction.user.id, session);
+      const honeypotChannel = await guild.channels.create({
+        name: 'honeypot',
+        type: ChannelType.GuildText,
+        reason: 'Veri setup: honeypot channel'
+      });
 
-      const embed = buildSetupEmbed(0, cfg, guild.name);
-      const components = buildSetupButtons(0);
+      cfg.verificationChannelId = verificationChannel.id;
+      cfg.logsChannelId = logsChannel.id;
+      cfg.honeypotChannelId = honeypotChannel.id;
+      saveData(data);
 
-      const msg = await dm.send({ embeds: [embed], components });
-      session.messageId = msg.id;
+      // post verify button in verification channel
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('veri_start')
+          .setLabel('Verify')
+          .setStyle(ButtonStyle.Success)
+      );
 
+      const verifyEmbed = boxEmbed({
+        title: 'Verification',
+        description:
+          'Press the button below to start verification.\nYou will receive a DM with your captcha.\n\nIn this channel you will only see a message telling you to check your DMs.',
+        footer: 'Veri System'
+      });
+
+      await verificationChannel.send({ embeds: [verifyEmbed], components: [row] });
+
+      // reply to admin
       const replyEmbed = boxEmbed({
-        title: 'Veri Setup',
-        description: 'I have sent you a DM with the setup wizard.',
+        title: 'Setup Complete',
+        description:
+          'Verification, logs, and honeypot channels have been created.\nThe Verify button has been posted in the verification channel.',
         footer: 'Veri System'
       });
 
       await interaction.reply({ embeds: [replyEmbed], ephemeral: true });
+
+      // welcome message in logs
+      const welcome = boxEmbed({
+        title: 'Veri Enabled',
+        description:
+          'Welcome to Veri.\n\nThis bot provides DM-based captcha verification and honeypot protection.\n\nCommands:\n• `/setup` – create channels and Verify button\n• `/settings` – adjust Veri settings\n• `/player info` – view a user’s Veri record',
+        footer: 'Veri System'
+      });
+      await logsChannel.send({ embeds: [welcome] });
+
+      await sendLog(
+        guild,
+        'Setup Completed',
+        'Channels created and Verify button posted by /setup.'
+      );
     }
 
     if (name === 'settings') {
@@ -548,7 +451,8 @@ client.on('interactionCreate', async interaction => {
 
       const embed = boxEmbed({
         title: 'Settings Updated',
-        description: 'Veri settings have been updated.',
+        description:
+          `Veri settings have been updated.\n\nHoneypot punishment: **${cfg.honeypotPunishment}**\nTimeout minutes: **${cfg.honeypotTimeoutMinutes}**\nCaptcha enabled: **${cfg.captchaEnabled ? 'Yes' : 'No'}**\nHoneypot enabled: **${cfg.honeypotEnabled ? 'Yes' : 'No'}**`,
         footer: 'Veri System'
       });
 
@@ -634,142 +538,8 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // setup wizard buttons
+  // verify button
   if (interaction.isButton()) {
-    const customId = interaction.customId;
-
-    // setup wizard
-    if (
-      customId === 'setup_next' ||
-      customId === 'setup_back' ||
-      customId === 'setup_finish' ||
-      customId === 'setup_cancel'
-    ) {
-      const session = setupSessions.get(interaction.user.id);
-      if (!session) {
-        return interaction.reply({
-          embeds: [
-            boxEmbed({
-              title: 'Setup Session Expired',
-              description: 'There is no active setup session for you.',
-              footer: 'Veri System'
-            })
-          ],
-          ephemeral: true
-        });
-      }
-
-      const guild = client.guilds.cache.get(session.guildId);
-      if (!guild) {
-        setupSessions.delete(interaction.user.id);
-        return interaction.reply({
-          embeds: [
-            boxEmbed({
-              title: 'Setup Failed',
-              description: 'The server for this setup session no longer exists.',
-              footer: 'Veri System'
-            })
-          ],
-          ephemeral: true
-        });
-      }
-
-      const cfg = getGuildConfig(guild.id);
-
-      if (customId === 'setup_cancel') {
-        setupSessions.delete(interaction.user.id);
-        return interaction.update({
-          embeds: [
-            boxEmbed({
-              title: 'Setup Cancelled',
-              description: 'The Veri setup wizard has been cancelled.',
-              footer: 'Veri System'
-            })
-          ],
-          components: []
-        });
-      }
-
-      if (customId === 'setup_next') {
-        session.step = Math.min(session.step + 1, 7);
-      } else if (customId === 'setup_back') {
-        session.step = Math.max(session.step - 1, 0);
-      } else if (customId === 'setup_finish') {
-        // finish: post verify button and welcome message
-        setupSessions.delete(interaction.user.id);
-
-        // post verify button in verification channel
-        if (cfg.verificationChannelId) {
-          const vChan = guild.channels.cache.get(cfg.verificationChannelId);
-          if (vChan && vChan.type === ChannelType.GuildText) {
-            const row = new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setCustomId('veri_start')
-                .setLabel('Verify')
-                .setStyle(ButtonStyle.Success)
-            );
-
-            const embed = boxEmbed({
-              title: 'Verification',
-              description:
-                'Press the button below to start verification.\nYou will receive a DM with your captcha.',
-              footer: 'Veri System'
-            });
-
-            await vChan.send({ embeds: [embed], components: [row] });
-          }
-        }
-
-        // welcome message in logs
-        if (cfg.logsChannelId) {
-          const welcome = boxEmbed({
-            title: 'Veri Enabled',
-            description:
-              'Welcome to Veri.\n\nThis bot provides DM-based captcha verification and honeypot protection for your server.\n\nCommands:\n• /setup – run the setup wizard\n• /settings – adjust Veri settings\n• /player info – view a user’s Veri record',
-            footer: 'Veri System'
-          });
-          const logsChan = guild.channels.cache.get(cfg.logsChannelId);
-          if (logsChan && logsChan.type === ChannelType.GuildText) {
-            await logsChan.send({ embeds: [welcome] });
-          }
-        }
-
-        return interaction.update({
-          embeds: [
-            boxEmbed({
-              title: 'Setup Complete',
-              description:
-                'Veri setup is complete.\nThe Verify button has been posted in the verification channel.',
-              footer: 'Veri System'
-            })
-          ],
-          components: []
-        });
-      }
-
-      // update config automatically based on step and where /setup was run
-      const originChannel = guild.channels.cache.get(session.channelId);
-      if (originChannel && originChannel.type === ChannelType.GuildText) {
-        if (session.step === 1 && !cfg.verificationChannelId) {
-          cfg.verificationChannelId = originChannel.id;
-        }
-        if (session.step === 2 && !cfg.logsChannelId) {
-          cfg.logsChannelId = originChannel.id;
-        }
-        if (session.step === 3 && !cfg.honeypotChannelId) {
-          cfg.honeypotChannelId = originChannel.id;
-        }
-      }
-
-      saveData(data);
-
-      const embed = buildSetupEmbed(session.step, cfg, guild.name);
-      const components = buildSetupButtons(session.step);
-
-      return interaction.update({ embeds: [embed], components });
-    }
-
-    // verify button
     if (interaction.customId === 'veri_start') {
       const guild = interaction.guild;
       const cfg = getGuildConfig(guild.id);
@@ -796,7 +566,7 @@ client.on('interactionCreate', async interaction => {
 
       // create captcha session
       const id = Math.floor(Math.random() * 30) + 1;
-      const answer = captchaAnswers[id];
+      const answer = captchaMap[id];
       const buffer = generateCaptchaImage(id);
 
       captchaSessions.set(interaction.user.id, {
@@ -833,7 +603,7 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// message handler: honeypot + DM captcha answers
+// message handler: DM captcha answers + honeypot
 client.on('messageCreate', async message => {
   // DM captcha answers
   if (!message.guild && !message.author.bot) {
@@ -913,7 +683,7 @@ client.on('messageCreate', async message => {
 
       // new captcha
       const id = Math.floor(Math.random() * 30) + 1;
-      const answer = captchaAnswers[id];
+      const answer = captchaMap[id];
       const buffer = generateCaptchaImage(id);
 
       captchaSessions.set(message.author.id, {
