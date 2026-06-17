@@ -7,6 +7,7 @@ import {
   SlashCommandBuilder,
   PermissionFlagsBits,
   ChannelType,
+  ThreadAutoArchiveDuration,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -15,6 +16,7 @@ import {
   Collection
 } from 'discord.js';
 import { createCanvas } from 'canvas';
+import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -25,11 +27,22 @@ const DATA_PATH = path.join(__dirname, 'veri-data.json');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
+const PORT = process.env.PORT || 3000;
 
 if (!BOT_TOKEN || !CLIENT_ID) {
   console.error('BOT_TOKEN and CLIENT_ID must be set as environment variables.');
   process.exit(1);
 }
+
+// tiny HTTP server so Render keeps the service alive
+http
+  .createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Veri bot is running\n');
+  })
+  .listen(PORT, () => {
+    console.log(`Web service running on port ${PORT}`);
+  });
 
 // basic JSON store
 function loadData() {
@@ -216,7 +229,7 @@ async function registerCommands() {
   console.log('Slash commands registered.');
 }
 
-// helper: log to guild logs channel
+// helper: log to guild logs channel (no pings)
 async function sendLog(guild, text) {
   const cfg = getGuildConfig(guild.id);
   if (!cfg.logsChannelId) return;
@@ -270,9 +283,12 @@ client.on('guildMemberAdd', async member => {
     record.lastVerification = Date.now();
     saveData(data);
 
-    member.send({
-      content: 'You were already verified using Veri in another server. You have been verified here automatically.'
-    }).catch(() => {});
+    member
+      .send({
+        content:
+          'You were already verified using Veri in another server. You have been verified here automatically.'
+      })
+      .catch(() => {});
 
     await sendLog(
       member.guild,
@@ -384,10 +400,7 @@ client.on('interactionCreate', async interaction => {
         ephemeral: true
       });
 
-      await sendLog(
-        guild,
-        'Config command used. Settings updated.'
-      );
+      await sendLog(guild, 'Config command used. Settings updated.');
     }
 
     if (name === 'player') {
@@ -409,17 +422,24 @@ client.on('interactionCreate', async interaction => {
           .addFields(
             {
               name: 'First verified',
-              value: record.firstVerified ? new Date(record.firstVerified).toISOString() : 'Never',
+              value: record.firstVerified
+                ? new Date(record.firstVerified).toISOString()
+                : 'Never',
               inline: false
             },
             {
               name: 'Last verification',
-              value: record.lastVerification ? new Date(record.lastVerification).toISOString() : 'Never',
+              value: record.lastVerification
+                ? new Date(record.lastVerification).toISOString()
+                : 'Never',
               inline: false
             },
             {
               name: 'Servers verified in',
-              value: (record.servers && record.servers.length > 0) ? record.servers.join(', ') : 'None',
+              value:
+                record.servers && record.servers.length > 0
+                  ? record.servers.join(', ')
+                  : 'None',
               inline: false
             },
             {
@@ -480,6 +500,7 @@ client.on('interactionCreate', async interaction => {
 
       const thread = await verificationChannel.threads.create({
         name: `verify-${interaction.user.id}`,
+        autoArchiveDuration: ThreadAutoArchiveDuration.OneHour,
         type: ChannelType.PrivateThread,
         reason: 'Veri verification thread'
       });
@@ -561,7 +582,6 @@ client.on('messageCreate', async message => {
       record.servers = Array.from(new Set([...(record.servers || []), guild.id]));
       saveData(data);
 
-      const cfg = getGuildConfig(guild.id);
       if (cfg.verificationRoleId) {
         const role = guild.roles.cache.get(cfg.verificationRoleId);
         if (role) {
