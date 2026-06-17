@@ -13,7 +13,6 @@ import {
   EmbedBuilder,
   Collection
 } from 'discord.js';
-import { createCanvas } from 'canvas';
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
@@ -32,7 +31,7 @@ if (!BOT_TOKEN || !CLIENT_ID) {
   process.exit(1);
 }
 
-// keep-alive HTTP server for Render
+// keep-alive HTTP server (Render)
 http
   .createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -101,7 +100,7 @@ function getUserRecord(userId) {
 // green theme
 const THEME_COLOR = 0x00c853;
 
-// helper: boxed embed
+// boxed embed helper
 function boxEmbed({ title, description, fields = [], footer }) {
   const embed = new EmbedBuilder()
     .setColor(THEME_COLOR)
@@ -114,41 +113,47 @@ function boxEmbed({ title, description, fields = [], footer }) {
   return embed;
 }
 
-// captcha: 30 equation images with known answers
-const captchaMap = {};
-for (let i = 1; i <= 30; i++) {
-  const a = (i % 5) + 1; // 1–5
-  const b = ((i * 2) % 5) + 1; // 1–5
-  captchaMap[i] = a + b;
-}
+// captcha files + answers (root folder)
+const captchaFiles = [
+  'a.png.png',
+  'b.png.png',
+  'c.png.png',
+  'd.png.png',
+  'e.png.png',
+  'f.png.png',
+  'g.png.png',
+  'h.png.png',
+  'i.png.png',
+  'j.png.png',
+  'k.png.png',
+  'l.png.png',
+  'm.png.png',
+  'n.png.png',
+  'o.png.png'
+];
 
-function generateCaptchaImage(id) {
-  const a = (id % 5) + 1;
-  const b = ((id * 2) % 5) + 1;
-  const text = `${a} + ${b} = ?`;
+const captchaAnswers = {
+  'a.png.png': 2,
+  'b.png.png': 8,
+  'c.png.png': 2,
+  'd.png.png': 3,
+  'e.png.png': 7,
+  'f.png.png': 4,
+  'g.png.png': 5,
+  'h.png.png': 5,
+  'i.png.png': 7,
+  'j.png.png': 5,
+  'k.png.png': 5,
+  'l.png.png': 9,
+  'm.png.png': 6,
+  'n.png.png': 8,
+  'o.png.png': 1
+};
 
-  const width = 400;
-  const height = 200;
-  const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext('2d');
-
-  // light green background
-  ctx.fillStyle = '#f5fff7';
-  ctx.fillRect(0, 0, width, height);
-
-  // equation text
-  ctx.font = 'bold 72px Sans';
-  ctx.fillStyle = '#00c853';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, width / 2, height / 2);
-
-  // subtle border
-  ctx.strokeStyle = '#00c853';
-  ctx.lineWidth = 4;
-  ctx.strokeRect(10, 10, width - 20, height - 20);
-
-  return canvas.toBuffer();
+function getRandomCaptcha() {
+  const file = captchaFiles[Math.floor(Math.random() * captchaFiles.length)];
+  const answer = captchaAnswers[file];
+  return { file, answer };
 }
 
 // in-memory captcha sessions: userId -> { answer, guildId }
@@ -240,7 +245,7 @@ async function registerCommands() {
   console.log('Slash commands registered.');
 }
 
-// helper: log to guild logs channel
+// log helper
 async function sendLog(guild, title, description) {
   const cfg = getGuildConfig(guild.id);
   if (!cfg.logsChannelId) return;
@@ -256,7 +261,7 @@ async function sendLog(guild, title, description) {
   channel.send({ embeds: [embed] }).catch(() => {});
 }
 
-// helper: apply honeypot punishment
+// honeypot punishment
 async function applyHoneypotPunishment(member, cfg) {
   const reason = 'Veri honeypot trigger';
   if (cfg.honeypotPunishment === 'timeout') {
@@ -285,13 +290,15 @@ client.once('ready', async () => {
   }
 });
 
-// when bot joins a new guild: send hi message, delete after 5 minutes
+// on join: hi message, delete after 5 minutes
 client.on('guildCreate', async guild => {
   try {
     const systemChannel =
       guild.systemChannel ||
       guild.channels.cache.find(
-        c => c.type === ChannelType.GuildText && c.permissionsFor(guild.members.me).has('SendMessages')
+        c =>
+          c.type === ChannelType.GuildText &&
+          c.permissionsFor(guild.members.me).has('SendMessages')
       );
 
     if (!systemChannel) return;
@@ -306,13 +313,13 @@ client.on('guildCreate', async guild => {
     const msg = await systemChannel.send({ embeds: [embed] });
     setTimeout(() => {
       msg.delete().catch(() => {});
-    }, 5 * 60 * 1000); // 5 minutes
+    }, 5 * 60 * 1000);
   } catch {
     // ignore
   }
 });
 
-// guild member join: auto-verify if globally verified
+// auto-verify if globally verified
 client.on('guildMemberAdd', async member => {
   const cfg = getGuildConfig(member.guild.id);
   const record = getUserRecord(member.id);
@@ -345,7 +352,7 @@ client.on('guildMemberAdd', async member => {
   }
 });
 
-// interaction handler
+// interactions
 client.on('interactionCreate', async interaction => {
   if (interaction.isChatInputCommand()) {
     const name = interaction.commandName;
@@ -388,7 +395,7 @@ client.on('interactionCreate', async interaction => {
       cfg.honeypotChannelId = honeypotChannel.id;
       saveData(data);
 
-      // post verify button in verification channel
+      // verify button
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId('veri_start')
@@ -405,7 +412,6 @@ client.on('interactionCreate', async interaction => {
 
       await verificationChannel.send({ embeds: [verifyEmbed], components: [row] });
 
-      // reply to admin
       const replyEmbed = boxEmbed({
         title: 'Setup Complete',
         description:
@@ -415,7 +421,6 @@ client.on('interactionCreate', async interaction => {
 
       await interaction.reply({ embeds: [replyEmbed], ephemeral: true });
 
-      // welcome message in logs
       const welcome = boxEmbed({
         title: 'Veri Enabled',
         description:
@@ -564,10 +569,7 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({ embeds: [embed], ephemeral: true });
       }
 
-      // create captcha session
-      const id = Math.floor(Math.random() * 30) + 1;
-      const answer = captchaMap[id];
-      const buffer = generateCaptchaImage(id);
+      const { file, answer } = getRandomCaptcha();
 
       captchaSessions.set(interaction.user.id, {
         answer,
@@ -583,7 +585,7 @@ client.on('interactionCreate', async interaction => {
 
       await dm.send({
         embeds: [dmEmbed],
-        files: [{ attachment: buffer, name: `captcha_${id}.png` }]
+        files: [path.join(__dirname, file)]
       });
 
       const replyEmbed = boxEmbed({
@@ -603,7 +605,7 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// message handler: DM captcha answers + honeypot
+// messages: DM captcha + honeypot
 client.on('messageCreate', async message => {
   // DM captcha answers
   if (!message.guild && !message.author.bot) {
@@ -681,10 +683,7 @@ client.on('messageCreate', async message => {
         `User ${message.author.id} failed a verification attempt via DM.`
       );
 
-      // new captcha
-      const id = Math.floor(Math.random() * 30) + 1;
-      const answer = captchaMap[id];
-      const buffer = generateCaptchaImage(id);
+      const { file, answer } = getRandomCaptcha();
 
       captchaSessions.set(message.author.id, {
         answer,
@@ -699,7 +698,7 @@ client.on('messageCreate', async message => {
 
       await message.channel.send({
         embeds: [embed],
-        files: [{ attachment: buffer, name: `captcha_${id}.png` }]
+        files: [path.join(__dirname, file)]
       });
 
       return;
@@ -712,7 +711,7 @@ client.on('messageCreate', async message => {
   const guild = message.guild;
   const cfg = getGuildConfig(guild.id);
 
-  // honeypot trap
+  // honeypot
   if (
     cfg.honeypotEnabled &&
     cfg.honeypotChannelId &&
