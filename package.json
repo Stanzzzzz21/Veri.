@@ -1,0 +1,13 @@
+{
+  "name": "veri-bot",
+  "version": "1.0.0",
+  "main": "veri.js",
+  "type": "module",
+  "scripts": {
+    "start": "node veri.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "canvas": "^2.11.2"
+  }
+}
