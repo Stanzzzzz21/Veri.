@@ -1,3 +1,5 @@
+// veri.js
+
 import {
   Client,
   GatewayIntentBits,
@@ -29,8 +31,11 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const PORT = process.env.PORT || 3000;
 
-// your master ID (cannot be banned, only one who can use /Veri_Staff)
+// master ID (cannot be banned, only one who can use /veri_staff)
 const OWNER_ID = '876731494805155851';
+
+// verification banner (bottom of embed)
+const VERIFICATION_BANNER_URL = 'https://kommodo.ai/i/vKeCQW3p83yZItUro2cP';
 
 if (!BOT_TOKEN || !CLIENT_ID) {
   console.error('BOT_TOKEN and CLIENT_ID must be set as environment variables.');
@@ -82,7 +87,8 @@ function getGuildConfig(guildId) {
       verificationRoleId: null,
       adminRoleId: null,
       captchaEnabled: true,
-      honeypotEnabled: true
+      honeypotEnabled: true,
+      honeypotMode: 'global_ban' // global_ban | server_ban | kick | warn | dm_only
     };
     saveData(data);
   }
@@ -218,6 +224,18 @@ const settingsCommand = new SlashCommandBuilder()
       .setName('honeypot_enabled')
       .setDescription('Enable or disable honeypot.')
   )
+  .addStringOption(opt =>
+    opt
+      .setName('honeypot_mode')
+      .setDescription('Set honeypot punishment mode.')
+      .addChoices(
+        { name: 'Global Ban (default)', value: 'global_ban' },
+        { name: 'Server Ban Only', value: 'server_ban' },
+        { name: 'Kick Only', value: 'kick' },
+        { name: 'Warn Only', value: 'warn' },
+        { name: 'DM Warning Only', value: 'dm_only' }
+      )
+  )
   .addRoleOption(opt =>
     opt
       .setName('verification_role')
@@ -243,19 +261,25 @@ const staffCommand = new SlashCommandBuilder()
   .setName('veri_staff')
   .setDescription('Veri. Staff control panel (owner only).');
 
+const securityScoreCommand = new SlashCommandBuilder()
+  .setName('security_score')
+  .setDescription('Show this server’s Veri. security score.');
+
+// register
 client.commands.set('setup', { data: setupCommand });
 client.commands.set('settings', { data: settingsCommand });
 client.commands.set('player', { data: playerInfoCommand });
 client.commands.set('veri_staff', { data: staffCommand });
+client.commands.set('security_score', { data: securityScoreCommand });
 
-// register commands
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
   const commands = [
     setupCommand.toJSON(),
     settingsCommand.toJSON(),
     playerInfoCommand.toJSON(),
-    staffCommand.toJSON()
+    staffCommand.toJSON(),
+    securityScoreCommand.toJSON()
   ];
   await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
   console.log('Slash commands registered for Veri.');
@@ -287,7 +311,7 @@ client.once('ready', async () => {
   }
 });
 
-// guild join: welcome message, delete after 5 minutes
+// guild join: welcome message
 client.on('guildCreate', async guild => {
   try {
     const systemChannel =
@@ -295,7 +319,7 @@ client.on('guildCreate', async guild => {
       guild.channels.cache.find(
         c =>
           c.type === ChannelType.GuildText &&
-          c.permissionsFor(guild.members.me).has('SendMessages')
+          c.permissionsFor(guild.members.me).has(PermissionFlagsBits.SendMessages)
       );
 
     if (!systemChannel) return;
@@ -396,7 +420,7 @@ client.on('guildMemberAdd', async member => {
   );
 });
 
-// permission check for Veri. commands (setup/settings/player)
+// permission check for Veri. commands (setup/settings/player/security_score)
 function canUseVeriCommands(interaction) {
   const guild = interaction.guild;
   if (!guild) return false;
@@ -405,9 +429,47 @@ function canUseVeriCommands(interaction) {
 
   if (interaction.user.id === OWNER_ID) return true;
   if (guild.ownerId === interaction.user.id) return true;
+  if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
   if (cfg.adminRoleId && member.roles.cache.has(cfg.adminRoleId)) return true;
 
   return false;
+}
+
+// compute server security score (simple version)
+function computeSecurityScore(guild) {
+  const cfg = getGuildConfig(guild.id);
+  let score = 0;
+  let max = 100;
+
+  // base: captcha + honeypot
+  if (cfg.captchaEnabled) score += 20;
+  if (cfg.honeypotEnabled) score += 20;
+
+  // channels
+  if (cfg.verificationChannelId && guild.channels.cache.get(cfg.verificationChannelId)) score += 10;
+  if (cfg.honeypotChannelId && guild.channels.cache.get(cfg.honeypotChannelId)) score += 10;
+  if (cfg.logsChannelId && guild.channels.cache.get(cfg.logsChannelId)) score += 10;
+
+  // roles
+  if (cfg.verificationRoleId && guild.roles.cache.get(cfg.verificationRoleId)) score += 10;
+  if (cfg.adminRoleId && guild.roles.cache.get(cfg.adminRoleId)) score += 10;
+
+  // stats
+  const totalUsers = Object.keys(data.verifiedUsers).length;
+  const blacklistSize = Array.isArray(data.blacklist) ? data.blacklist.length : 0;
+  const penalty = Math.min(20, blacklistSize * 2);
+  score += 10 - penalty;
+
+  if (score < 0) score = 0;
+  if (score > max) score = max;
+
+  let status = 'Unknown';
+  if (score >= 85) status = 'Very Secure';
+  else if (score >= 70) status = 'Secure';
+  else if (score >= 50) status = 'Moderate';
+  else status = 'Needs Attention';
+
+  return { score, status, totalUsers, blacklistSize };
 }
 
 // interactions
@@ -421,7 +483,7 @@ client.on('interactionCreate', async interaction => {
         const embed = boxEmbed({
           title: 'Veri.',
           description:
-            'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, or official Veri. staff may run Veri. setup.',
+            'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, Discord administrators, or official Veri. staff may run Veri. setup.',
           footer: 'Veri.'
         });
         return interaction.reply({ embeds: [embed], ephemeral: true });
@@ -502,31 +564,31 @@ client.on('interactionCreate', async interaction => {
           .setStyle(ButtonStyle.Success)
       );
 
-      const verifyEmbed = boxEmbed({
-        title: 'Veri.',
-        description:
-          'Press the button below to start verification with Veri.\nYou will receive a DM with your captcha.\n\nYou will only see this channel and the honeypot channel until you pass verification.',
-        footer: 'Veri.'
-      });
+      const verifyEmbed = new EmbedBuilder()
+        .setColor(THEME_COLOR)
+        .setTitle('WELCOME TO VERIFICATION')
+        .setDescription(
+          'Securing Your Communities – Simple Captcha Verification\n\n' +
+            'To keep this community safe and spam-free, you must complete a short verification.\n' +
+            'Please follow the steps below to gain full access.\n\n' +
+            '1. Press the Verify button\n' +
+            '2. Check your DMs\n' +
+            '3. Solve the captcha\n' +
+            '4. Access all channels'
+        )
+        .setFooter({ text: 'Veri.' })
+        .setImage(VERIFICATION_BANNER_URL);
 
       await verificationChannel.send({ embeds: [verifyEmbed], components: [row] });
 
-      // honeypot warning box (big)
+      // honeypot warning box (big, no emojis)
       const honeypotEmbed = boxEmbed({
         title: 'DO NOT TYPE HERE',
         description:
-          '```' +
-          '██████████████████████████████████████████████\n' +
-          '█                                              █\n' +
-          '█                DO NOT TYPE HERE              █\n' +
-          '█                                              █\n' +
-          '█  This is a Veri. honeypot trap channel.      █\n' +
-          '█  Anyone typing here will be banned from      █\n' +
-          '█  ALL Veri. servers.                          █\n' +
-          '█  No exceptions can be made.                  █\n' +
-          '█                                              █\n' +
-          '██████████████████████████████████████████████\n' +
-          '```',
+          'This channel is a Veri. honeypot.\n' +
+          'Any message sent here will result in an immediate punishment based on this server’s Veri. configuration.\n' +
+          'There are no conversations here, no support here, and no reason to type here.\n\n' +
+          'If you are reading this, close this channel and do not interact with it.',
         footer: 'Veri.'
       });
 
@@ -541,14 +603,6 @@ client.on('interactionCreate', async interaction => {
 
       await interaction.reply({ embeds: [replyEmbed], ephemeral: true });
 
-      const welcome = boxEmbed({
-        title: 'Veri.',
-        description:
-          'Veri. is now active on this server.\n\nNew members will be locked to the verification and honeypot channels until they pass captcha verification.\nTyping in the honeypot channel results in a permanent ban from all Veri. servers.\n\nCommands:\n• `/setup` – configure channels and post the Verify button\n• `/settings` – adjust Veri. settings\n• `/player info` – view a user’s Veri. record\n• `/veri_staff` – Veri. Staff control panel (owner only)',
-        footer: 'Veri.'
-      });
-      await logsChannel.send({ embeds: [welcome] });
-
       await sendLog(
         guild,
         'Veri. Setup',
@@ -561,7 +615,7 @@ client.on('interactionCreate', async interaction => {
         const embed = boxEmbed({
           title: 'Veri.',
           description:
-            'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, or official Veri. staff may run Veri. settings.',
+            'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, Discord administrators, or official Veri. staff may run Veri. settings.',
           footer: 'Veri.'
         });
         return interaction.reply({ embeds: [embed], ephemeral: true });
@@ -572,10 +626,12 @@ client.on('interactionCreate', async interaction => {
 
       const captchaEnabled = interaction.options.getBoolean('captcha_enabled');
       const honeypotEnabled = interaction.options.getBoolean('honeypot_enabled');
+      const honeypotMode = interaction.options.getString('honeypot_mode');
       const verificationRole = interaction.options.getRole('verification_role');
 
       if (typeof captchaEnabled === 'boolean') cfg.captchaEnabled = captchaEnabled;
       if (typeof honeypotEnabled === 'boolean') cfg.honeypotEnabled = honeypotEnabled;
+      if (honeypotMode) cfg.honeypotMode = honeypotMode;
       if (verificationRole) cfg.verificationRoleId = verificationRole.id;
 
       saveData(data);
@@ -587,9 +643,10 @@ client.on('interactionCreate', async interaction => {
       const embed = boxEmbed({
         title: 'Veri. Settings Updated',
         description:
-          `Captcha enabled: **${cfg.captchaEnabled ? 'Yes' : 'No'}**\n` +
-          `Honeypot enabled: **${cfg.honeypotEnabled ? 'Yes' : 'No'}**\n` +
-          `Verification role: **${verificationRoleText}**`,
+          `Captcha enabled: ${cfg.captchaEnabled ? 'Yes' : 'No'}\n` +
+          `Honeypot enabled: ${cfg.honeypotEnabled ? 'Yes' : 'No'}\n` +
+          `Honeypot mode: ${cfg.honeypotMode}\n` +
+          `Verification role: ${verificationRoleText}`,
         footer: 'Veri.'
       });
 
@@ -607,7 +664,7 @@ client.on('interactionCreate', async interaction => {
         const embed = boxEmbed({
           title: 'Veri.',
           description:
-            'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, or official Veri. staff may run Veri. player commands.',
+            'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, Discord administrators, or official Veri. staff may run Veri. player commands.',
           footer: 'Veri.'
         });
         return interaction.reply({ embeds: [embed], ephemeral: true });
@@ -664,7 +721,7 @@ client.on('interactionCreate', async interaction => {
         lines.push(`• Honeypot Triggers: ${record.honeypotTriggers || 0}`);
         lines.push('');
         lines.push(
-          `Global Honeypot Blacklist: **${isBlacklisted(userId) ? 'Yes' : 'No'}**`
+          `Global Honeypot Blacklist: ${isBlacklisted(userId) ? 'Yes' : 'No'}`
         );
 
         const embed = boxEmbed({
@@ -686,6 +743,35 @@ client.on('interactionCreate', async interaction => {
           `Player info requested for user id ${userId}.`
         );
       }
+    }
+
+    if (name === 'security_score') {
+      if (!canUseVeriCommands(interaction)) {
+        const embed = boxEmbed({
+          title: 'Veri.',
+          description:
+            'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, Discord administrators, or official Veri. staff may view the security score.',
+          footer: 'Veri.'
+        });
+        return interaction.reply({ embeds: [embed], ephemeral: true });
+      }
+
+      const guild = interaction.guild;
+      const { score, status, totalUsers, blacklistSize } = computeSecurityScore(guild);
+
+      const embed = boxEmbed({
+        title: 'Veri. Server Security Score',
+        description:
+          `Server: ${guild.name}\n` +
+          `Score: ${score}/100\n` +
+          `Status: ${status}\n\n` +
+          `Verified users tracked: ${totalUsers}\n` +
+          `Global blacklist size: ${blacklistSize}`,
+        footer: 'Veri.'
+      });
+
+      await interaction.reply({ embeds: [embed], ephemeral: false });
+      return;
     }
 
     if (name === 'veri_staff') {
@@ -759,7 +845,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // buttons + modals for Veri. Staff
+  // buttons + modals for Veri. Staff + verify
   if (interaction.isButton()) {
     const id = interaction.customId;
 
@@ -798,7 +884,7 @@ client.on('interactionCreate', async interaction => {
       const dmEmbed = boxEmbed({
         title: 'Veri. Verification',
         description:
-          'You are verifying for a server using Veri.\n\nLook at the image and reply with the correct number.\nReply with **only the number**.',
+          'You are verifying for a server using Veri.\n\nLook at the image and reply with the correct number.\nReply with only the number.',
         footer: 'Veri.'
       });
 
@@ -971,7 +1057,7 @@ client.on('interactionCreate', async interaction => {
         const embed = boxEmbed({
           title: 'Veri. Staff – Remove This Server',
           description:
-            `All Veri. data for server ID \`${guildId}\` has been removed.\n` +
+            `All Veri. data for server ID ${guildId} has been removed.\n` +
             'This server is now treated as fresh by Veri.',
           footer: 'Veri.'
         });
@@ -1079,7 +1165,7 @@ client.on('interactionCreate', async interaction => {
       const embed = boxEmbed({
         title: 'Veri. Staff – Remove Server by ID',
         description:
-          `All Veri. data for server ID \`${serverId}\` has been removed.\n` +
+          `All Veri. data for server ID ${serverId} has been removed.\n` +
           'This server is now treated as fresh by Veri.',
         footer: 'Veri.'
       });
@@ -1132,7 +1218,7 @@ client.on('interactionCreate', async interaction => {
       const embed = boxEmbed({
         title: 'Veri. Staff – Force Verify User',
         description:
-          `User ID \`${userId}\` has been force-verified in server \`${guild.id}\`.\n` +
+          `User ID ${userId} has been force-verified in server ${guild.id}.\n` +
           'Their Veri. record has been updated.',
         footer: 'Veri.'
       });
@@ -1159,7 +1245,7 @@ client.on('interactionCreate', async interaction => {
       const embed = boxEmbed({
         title: 'Veri. Staff – Reset User',
         description:
-          `The Veri. record for user ID \`${userId}\` has been reset.\n` +
+          `The Veri. record for user ID ${userId} has been reset.\n` +
           'They will be treated as a new user by Veri.',
         footer: 'Veri.'
       });
@@ -1187,7 +1273,7 @@ client.on('interactionCreate', async interaction => {
       const embed = boxEmbed({
         title: 'Veri. Staff – Clear Honeypot Triggers',
         description:
-          `All honeypot trigger counts for user ID \`${userId}\` have been cleared.`,
+          `All honeypot trigger counts for user ID ${userId} have been cleared.`,
         footer: 'Veri.'
       });
       await dm.send({ embeds: [embed] });
@@ -1214,7 +1300,7 @@ client.on('interactionCreate', async interaction => {
       const embed = boxEmbed({
         title: 'Veri. Staff – Clear Captcha Fails',
         description:
-          `All captcha fail counts for user ID \`${userId}\` have been cleared.`,
+          `All captcha fail counts for user ID ${userId} have been cleared.`,
         footer: 'Veri.'
       });
       await dm.send({ embeds: [embed] });
@@ -1251,24 +1337,24 @@ client.on('interactionCreate', async interaction => {
       const lines = [];
       lines.push('System Tools Summary:');
       lines.push('');
-      lines.push(`• Guilds tracked: ${Object.keys(data.guilds).length}`);
-      lines.push(`• Verified users tracked: ${Object.keys(data.verifiedUsers).length}`);
+      lines.push(`Guilds tracked: ${Object.keys(data.guilds).length}`);
+      lines.push(`Verified users tracked: ${Object.keys(data.verifiedUsers).length}`);
       lines.push(
-        `• Global blacklist size: ${Array.isArray(data.blacklist) ? data.blacklist.length : 0}`
+        `Global blacklist size: ${Array.isArray(data.blacklist) ? data.blacklist.length : 0}`
       );
       lines.push('');
       lines.push('Current Guild:');
       if (guild) {
         const cfg = getGuildConfig(guild.id);
-        lines.push(`• ID: ${guild.id}`);
-        lines.push(`• Name: ${guild.name}`);
-        lines.push(`• Verification channel: ${cfg.verificationChannelId || 'None'}`);
-        lines.push(`• Logs channel: ${cfg.logsChannelId || 'None'}`);
-        lines.push(`• Honeypot channel: ${cfg.honeypotChannelId || 'None'}`);
-        lines.push(`• Verification role: ${cfg.verificationRoleId || 'None'}`);
-        lines.push(`• Admin role: ${cfg.adminRoleId || 'None'}`);
+        lines.push(`ID: ${guild.id}`);
+        lines.push(`Name: ${guild.name}`);
+        lines.push(`Verification channel: ${cfg.verificationChannelId || 'None'}`);
+        lines.push(`Logs channel: ${cfg.logsChannelId || 'None'}`);
+        lines.push(`Honeypot channel: ${cfg.honeypotChannelId || 'None'}`);
+        lines.push(`Verification role: ${cfg.verificationRoleId || 'None'}`);
+        lines.push(`Admin role: ${cfg.adminRoleId || 'None'}`);
       } else {
-        lines.push('• No guild context.');
+        lines.push('No guild context.');
       }
 
       const embed = boxEmbed({
@@ -1293,7 +1379,6 @@ client.on('interactionCreate', async interaction => {
   }
 
   // messages: DM captcha + honeypot
-  client.emit; // no-op to keep lints happy
 });
 
 client.on('messageCreate', async message => {
@@ -1434,12 +1519,10 @@ client.on('messageCreate', async message => {
     record.honeypotTriggers = (record.honeypotTriggers || 0) + 1;
     saveData(data);
 
-    addToBlacklist(message.author.id);
-
     await sendLog(
       guild,
       'Veri. Honeypot Triggered',
-      `User ${message.author.id} sent a message in the honeypot channel and was globally banned.`
+      `User ${message.author.id} sent a message in the honeypot channel.`
     );
 
     const dm = await message.author.createDM().catch(() => null);
@@ -1447,15 +1530,33 @@ client.on('messageCreate', async message => {
       const embed = boxEmbed({
         title: 'Veri.',
         description:
-          'You typed in a Veri. honeypot channel.\nThis results in a permanent ban from all Veri. servers.\nNo exceptions can be made.\n\nIf this was accidental, visit our website and email Veri. staff for assistance.',
+          'You typed in a Veri. honeypot channel.\nThis channel exists solely to catch spam bots and malicious users.\n\nIf this was accidental, visit our website and email Veri. staff for assistance.',
         footer: 'Veri.'
       });
       await dm.send({ embeds: [embed] }).catch(() => {});
     }
 
+    // punishment based on mode
     const member = await guild.members.fetch(message.author.id).catch(() => null);
-    if (member) {
-      await member.ban({ reason: 'Veri. honeypot trigger (global ban)' }).catch(() => {});
+    const mode = cfg.honeypotMode || 'global_ban';
+
+    if (mode === 'global_ban') {
+      addToBlacklist(message.author.id);
+      if (member) {
+        await member.ban({ reason: 'Veri. honeypot trigger (global ban)' }).catch(() => {});
+      }
+    } else if (mode === 'server_ban') {
+      if (member) {
+        await member.ban({ reason: 'Veri. honeypot trigger (server ban)' }).catch(() => {});
+      }
+    } else if (mode === 'kick') {
+      if (member) {
+        await member.kick('Veri. honeypot trigger (kick)').catch(() => {});
+      }
+    } else if (mode === 'warn') {
+      // already DM’d; nothing else
+    } else if (mode === 'dm_only') {
+      // DM only, no server action
     }
 
     return;
