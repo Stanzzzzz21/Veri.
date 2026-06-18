@@ -35,7 +35,7 @@ const PORT = process.env.PORT || 3000;
 const OWNER_ID = '876731494805155851';
 
 // verification banner (bottom of embed)
-const VERIFICATION_BANNER_URL = 'https://i.postimg.cc/SKrVKYhT/Verify-msg-banner.png';
+const VERIFICATION_BANNER_URL = 'https://kommodo.ai/i/vKeCQW3p83yZItUro2cP';
 
 if (!BOT_TOKEN || !CLIENT_ID) {
   console.error('BOT_TOKEN and CLIENT_ID must be set as environment variables.');
@@ -88,7 +88,8 @@ function getGuildConfig(guildId) {
       adminRoleId: null,
       captchaEnabled: true,
       honeypotEnabled: true,
-      honeypotMode: 'global_ban' // global_ban | server_ban | kick | warn | dm_only
+      honeypotMode: 'global_ban', // global_ban | server_ban | kick | warn | dm_only
+      setupComplete: false
     };
     saveData(data);
   }
@@ -441,20 +442,16 @@ function computeSecurityScore(guild) {
   let score = 0;
   let max = 100;
 
-  // base: captcha + honeypot
   if (cfg.captchaEnabled) score += 20;
   if (cfg.honeypotEnabled) score += 20;
 
-  // channels
   if (cfg.verificationChannelId && guild.channels.cache.get(cfg.verificationChannelId)) score += 10;
   if (cfg.honeypotChannelId && guild.channels.cache.get(cfg.honeypotChannelId)) score += 10;
   if (cfg.logsChannelId && guild.channels.cache.get(cfg.logsChannelId)) score += 10;
 
-  // roles
   if (cfg.verificationRoleId && guild.roles.cache.get(cfg.verificationRoleId)) score += 10;
   if (cfg.adminRoleId && guild.roles.cache.get(cfg.adminRoleId)) score += 10;
 
-  // stats
   const totalUsers = Object.keys(data.verifiedUsers).length;
   const blacklistSize = Array.isArray(data.blacklist) ? data.blacklist.length : 0;
   const penalty = Math.min(20, blacklistSize * 2);
@@ -470,6 +467,29 @@ function computeSecurityScore(guild) {
   else status = 'Needs Attention';
 
   return { score, status, totalUsers, blacklistSize };
+}
+
+// simple global reputation + risk for a guild
+function computeGuildReputationAndRisk(guild) {
+  const { score } = computeSecurityScore(guild);
+
+  let reputation = 80;
+  if (score >= 90) reputation = 95;
+  else if (score >= 80) reputation = 88;
+  else if (score >= 60) reputation = 75;
+  else reputation = 60;
+
+  let repLabel = 'Trusted';
+  if (reputation >= 90) repLabel = 'Highly Trusted';
+  else if (reputation >= 80) repLabel = 'Trusted';
+  else if (reputation >= 70) repLabel = 'Neutral';
+  else repLabel = 'Watch';
+
+  let risk = 'Low';
+  if (score < 50) risk = 'High';
+  else if (score < 70) risk = 'Medium';
+
+  return { reputation, repLabel, risk };
 }
 
 // interactions
@@ -491,6 +511,15 @@ client.on('interactionCreate', async interaction => {
 
       const guild = interaction.guild;
       const cfg = getGuildConfig(guild.id);
+
+      if (cfg.setupComplete) {
+        const embed = boxEmbed({
+          title: 'Veri.',
+          description: 'Setup has already been completed for this server. It cannot be run again.',
+          footer: 'Veri.'
+        });
+        return interaction.reply({ embeds: [embed], ephemeral: true });
+      }
 
       // create Veri. Admin role if missing
       let adminRole = cfg.adminRoleId
@@ -554,6 +583,7 @@ client.on('interactionCreate', async interaction => {
       cfg.verificationChannelId = verificationChannel.id;
       cfg.logsChannelId = logsChannel.id;
       cfg.honeypotChannelId = honeypotChannel.id;
+      cfg.setupComplete = true;
       saveData(data);
 
       // verify button
@@ -673,16 +703,6 @@ client.on('interactionCreate', async interaction => {
       const sub = interaction.options.getSubcommand();
       if (sub === 'info') {
         const userId = interaction.options.getString('user_id');
-        const record = data.verifiedUsers[userId];
-
-        if (!record) {
-          const embed = boxEmbed({
-            title: 'Veri. Player Info',
-            description: 'No Veri. record found for that user id.',
-            footer: 'Veri.'
-          });
-          return interaction.reply({ embeds: [embed], ephemeral: true });
-        }
 
         let user = null;
         try {
@@ -694,10 +714,51 @@ client.on('interactionCreate', async interaction => {
         const displayName = user?.globalName || user?.username || userId;
         const avatarURL = user?.displayAvatarURL({ size: 256 }) || null;
 
+        const record = data.verifiedUsers[userId];
+
+        // owner extra info
+        let ownerExtra = '';
+        if (userId === OWNER_ID) {
+          ownerExtra =
+            '\n\nStatus: OWNER\n' +
+            'About Me: Creator of Veri.\n' +
+            'Portfolio: https://stanzportfolio.vercel.app/';
+        }
+
+        if (!record) {
+          const embed = boxEmbed({
+            title: 'Veri. Player Information',
+            description:
+              `Display Name: ${displayName}\n` +
+              `User ID: ${userId}\n\n` +
+              `Verification Status: NOT VERIFIED\n` +
+              `First Verified: Never\n` +
+              `Last Verification: Never\n\n` +
+              `Servers Verified In:\n` +
+              `• None\n\n` +
+              `Verification Stats:\n` +
+              `• Failed Captchas: 0\n` +
+              `• Honeypot Triggers: 0\n\n` +
+              `Global Honeypot Blacklist: No` +
+              ownerExtra,
+            footer: 'Veri.'
+          });
+
+          if (avatarURL) {
+            embed.setAuthor({ name: displayName, iconURL: avatarURL });
+            embed.setThumbnail(avatarURL);
+          }
+
+          return interaction.reply({ embeds: [embed], ephemeral: true });
+        }
+
         const lines = [];
         lines.push(`Display Name: ${displayName}`);
         lines.push(`User ID: ${userId}`);
         lines.push('');
+        lines.push(
+          `Verification Status: ${record.firstVerified ? 'VERIFIED' : 'NOT VERIFIED'}`
+        );
         lines.push(
           `First Verified: ${
             record.firstVerified ? new Date(record.firstVerified).toISOString() : 'Never'
@@ -726,7 +787,7 @@ client.on('interactionCreate', async interaction => {
 
         const embed = boxEmbed({
           title: 'Veri. Player Information',
-          description: lines.join('\n'),
+          description: lines.join('\n') + ownerExtra,
           footer: 'Veri.'
         });
 
@@ -837,9 +898,16 @@ client.on('interactionCreate', async interaction => {
           .setStyle(ButtonStyle.Primary)
       );
 
+      const row4 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('vs_view_all_servers')
+          .setLabel('View All Servers')
+          .setStyle(ButtonStyle.Primary)
+      );
+
       await interaction.reply({
         embeds: [panelEmbed],
-        components: [row1, row2, row3],
+        components: [row1, row2, row3, row4],
         ephemeral: true
       });
     }
@@ -869,6 +937,16 @@ client.on('interactionCreate', async interaction => {
           title: 'Veri.',
           description:
             'Veri. could not send you a DM.\nPlease enable DMs from server members and try again.',
+          footer: 'Veri.'
+        });
+        return interaction.reply({ embeds: [embed], ephemeral: true });
+      }
+
+      const record = getUserRecord(interaction.user.id);
+      if (record.firstVerified && record.servers.includes(guild.id)) {
+        const embed = boxEmbed({
+          title: 'Veri.',
+          description: 'You are already verified in this server.',
           footer: 'Veri.'
         });
         return interaction.reply({ embeds: [embed], ephemeral: true });
@@ -909,8 +987,8 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // staff buttons (owner only)
-    if (id.startsWith('vs_')) {
+    // per-guild staff buttons (owner only)
+    if (id.startsWith('vs_') && !id.startsWith('vs_guild_')) {
       if (interaction.user.id !== OWNER_ID) {
         const embed = boxEmbed({
           title: 'Veri.',
@@ -1076,7 +1154,108 @@ client.on('interactionCreate', async interaction => {
         return;
       }
 
-      // modals for ID-based actions
+      if (id === 'vs_view_all_servers') {
+        const guilds = [...client.guilds.cache.values()];
+
+        if (guilds.length === 0) {
+          const embed = boxEmbed({
+            title: 'Veri. Staff – Global Server Overview',
+            description: 'Veri. is not currently in any servers.',
+            footer: 'Veri.'
+          });
+          await dm.send({ embeds: [embed] });
+        } else {
+          for (const g of guilds) {
+            const cfg = getGuildConfig(g.id);
+            const { score, status } = computeSecurityScore(g);
+            const { reputation, repLabel, risk } = computeGuildReputationAndRisk(g);
+
+            let verifiedCount = 0;
+            let totalFails = 0;
+            let totalHoneypot = 0;
+
+            for (const [uid, rec] of Object.entries(data.verifiedUsers)) {
+              if (rec.servers && rec.servers.includes(g.id)) {
+                verifiedCount++;
+                totalFails += rec.fails || 0;
+                totalHoneypot += rec.honeypotTriggers || 0;
+              }
+            }
+
+            const memberCount = g.memberCount || 0;
+            const unverifiedApprox = memberCount > verifiedCount ? memberCount - verifiedCount : 0;
+
+            const desc =
+              `Server: ${g.name}\n` +
+              `ID: ${g.id}\n\n` +
+              `Security Score: ${score}/100 (${status})\n` +
+              `Reputation: ${reputation}/100 (${repLabel})\n` +
+              `Risk Level: ${risk}\n\n` +
+              `Members: ${memberCount}\n` +
+              `Verified (approx): ${verifiedCount}\n` +
+              `Unverified (approx): ${unverifiedApprox}\n\n` +
+              `Verification Stats (approx):\n` +
+              `• Total Failed Captchas: ${totalFails}\n` +
+              `• Total Honeypot Triggers: ${totalHoneypot}`;
+
+            const embed = boxEmbed({
+              title: 'Veri. Global Server Overview',
+              description: desc,
+              footer: 'Veri.'
+            });
+
+            const row = new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`vs_guild_${g.id}_logs`)
+                .setLabel('View Logs')
+                .setStyle(ButtonStyle.Primary),
+              new ButtonBuilder()
+                .setCustomId(`vs_guild_${g.id}_remove`)
+                .setLabel('Remove Server')
+                .setStyle(ButtonStyle.Secondary),
+              new ButtonBuilder()
+                .setCustomId(`vs_guild_${g.id}_force_verify`)
+                .setLabel('Force Verify User')
+                .setStyle(ButtonStyle.Success)
+            );
+
+            const row2 = new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`vs_guild_${g.id}_reset_user`)
+                .setLabel('Reset User')
+                .setStyle(ButtonStyle.Secondary),
+              new ButtonBuilder()
+                .setCustomId(`vs_guild_${g.id}_clear_honeypot`)
+                .setLabel('Clear Honeypot')
+                .setStyle(ButtonStyle.Secondary),
+              new ButtonBuilder()
+                .setCustomId(`vs_guild_${g.id}_clear_fails`)
+                .setLabel('Clear Fails')
+                .setStyle(ButtonStyle.Secondary),
+              new ButtonBuilder()
+                .setCustomId(`vs_guild_${g.id}_system_tools`)
+                .setLabel('System Tools')
+                .setStyle(ButtonStyle.Primary)
+            );
+
+            await dm.send({ embeds: [embed], components: [row, row2] });
+          }
+        }
+
+        await interaction.reply({
+          embeds: [
+            boxEmbed({
+              title: 'Veri.',
+              description: 'Global server overview has been sent to your DMs.',
+              footer: 'Veri.'
+            })
+          ],
+          ephemeral: true
+        });
+        return;
+      }
+
+      // modals for ID-based actions (current guild)
       const modal = new ModalBuilder().setTitle('Veri. Staff').setCustomId(id + '_modal');
 
       if (id === 'vs_remove_server_id') {
@@ -1128,12 +1307,195 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
       return;
     }
+
+    // per-server buttons from global overview (vs_guild_...)
+    if (id.startsWith('vs_guild_')) {
+      if (interaction.user.id !== OWNER_ID) {
+        const embed = boxEmbed({
+          title: 'Veri.',
+          description:
+            'ERROR: Only official Veri. staff can run this.\nIf you have any issues, visit our website.',
+          footer: 'Veri.'
+        });
+        return interaction.reply({ embeds: [embed], ephemeral: true });
+      }
+
+      const dm = await interaction.user.createDM().catch(() => null);
+      if (!dm) {
+        const embed = boxEmbed({
+          title: 'Veri.',
+          description:
+            'Veri. could not send you a DM.\nStaff actions require DMs to be enabled.',
+          footer: 'Veri.'
+        });
+        return interaction.reply({ embeds: [embed], ephemeral: true });
+      }
+
+      const parts = id.split('_'); // vs_guild_<guildId>_<action>
+      const guildId = parts[2];
+      const action = parts[3];
+
+      const guild = client.guilds.cache.get(guildId) || (await client.guilds.fetch(guildId).catch(() => null));
+      if (!guild) {
+        const embed = boxEmbed({
+          title: 'Veri.',
+          description: `Guild ${guildId} is no longer available.`,
+          footer: 'Veri.'
+        });
+        await interaction.reply({ embeds: [embed], ephemeral: true });
+        return;
+      }
+
+      if (action === 'logs') {
+        const cfg = getGuildConfig(guild.id);
+        const logsChannel = cfg.logsChannelId
+          ? guild.channels.cache.get(cfg.logsChannelId)
+          : null;
+
+        if (!logsChannel || logsChannel.type !== ChannelType.GuildText) {
+          const embed = boxEmbed({
+            title: 'Veri. Staff – Server Logs',
+            description: `No valid logs channel is configured for server ${guild.id}.`,
+            footer: 'Veri.'
+          });
+          await dm.send({ embeds: [embed] });
+        } else {
+          const messages = await logsChannel.messages.fetch({ limit: 50 }).catch(() => null);
+          if (!messages || messages.size === 0) {
+            const embed = boxEmbed({
+              title: 'Veri. Staff – Server Logs',
+              description: `No recent Veri. logs found in the logs channel for server ${guild.id}.`,
+              footer: 'Veri.'
+            });
+            await dm.send({ embeds: [embed] });
+          } else {
+            const sorted = [...messages.values()].sort(
+              (a, b) => a.createdTimestamp - b.createdTimestamp
+            );
+            const lines = sorted.map(
+              m =>
+                `• [${new Date(m.createdTimestamp).toISOString()}] ${m.author.tag}: ${
+                  m.embeds[0]?.title || m.content || '(embed)'
+                }`
+            );
+            const chunks = [];
+            let current = [];
+            for (const line of lines) {
+              current.push(line);
+              if (current.join('\n').length > 1500) {
+                chunks.push(current.join('\n'));
+                current = [];
+              }
+            }
+            if (current.length) chunks.push(current.join('\n'));
+
+            let index = 1;
+            for (const chunk of chunks) {
+              const embed = boxEmbed({
+                title: `Veri. Staff – Server Logs (${guild.name}) (Page ${index})`,
+                description: chunk,
+                footer: 'Veri.'
+              });
+              await dm.send({ embeds: [embed] });
+              index++;
+            }
+          }
+        }
+
+        await interaction.reply({
+          embeds: [
+            boxEmbed({
+              title: 'Veri.',
+              description: `Server logs for ${guild.name} have been sent to your DMs.`,
+              footer: 'Veri.'
+            })
+          ],
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (action === 'remove') {
+        delete data.guilds[guild.id];
+        saveData(data);
+
+        const embed = boxEmbed({
+          title: 'Veri. Staff – Remove Server',
+          description:
+            `All Veri. data for server ID ${guild.id} (${guild.name}) has been removed.\n` +
+            'This server is now treated as fresh by Veri.',
+          footer: 'Veri.'
+        });
+        await dm.send({ embeds: [embed] });
+
+        await interaction.reply({
+          embeds: [
+            boxEmbed({
+              title: 'Veri.',
+              description: `Server ${guild.name} has been removed from Veri. tracking. Details sent to your DMs.`,
+              footer: 'Veri.'
+            })
+          ],
+          ephemeral: true
+        });
+        return;
+      }
+
+      // actions that need user id or confirmation -> use modals with guild context
+      const modal = new ModalBuilder()
+        .setTitle(`Veri. Staff – ${guild.name}`)
+        .setCustomId(`vs_guild_${guild.id}_${action}_modal`);
+
+      if (action === 'force_verify') {
+        const input = new TextInputBuilder()
+          .setCustomId('user_id')
+          .setLabel('User ID to force verify')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+      } else if (action === 'reset_user') {
+        const input = new TextInputBuilder()
+          .setCustomId('user_id')
+          .setLabel('User ID to reset')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+      } else if (action === 'clear_honeypot') {
+        const input = new TextInputBuilder()
+          .setCustomId('user_id')
+          .setLabel('User ID to clear honeypot triggers')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+      } else if (action === 'clear_fails') {
+        const input = new TextInputBuilder()
+          .setCustomId('user_id')
+          .setLabel('User ID to clear captcha fails')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+      } else if (action === 'system_tools') {
+        const input = new TextInputBuilder()
+          .setCustomId('dummy')
+          .setLabel('Type "run" to execute system tools summary')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+      } else {
+        return;
+      }
+
+      await interaction.showModal(modal);
+      return;
+    }
   }
 
   // modal submits for Veri. Staff
   if (interaction.isModalSubmit()) {
     const id = interaction.customId;
+
     if (!id.startsWith('vs_')) return;
+
     if (interaction.user.id !== OWNER_ID) {
       const embed = boxEmbed({
         title: 'Veri.',
@@ -1155,8 +1517,216 @@ client.on('interactionCreate', async interaction => {
       return interaction.reply({ embeds: [embed], ephemeral: true });
     }
 
-    const guild = interaction.guild;
+    // global per-guild modals from overview
+    if (id.startsWith('vs_guild_')) {
+      const parts = id.split('_'); // vs_guild_<guildId>_<action>_modal
+      const guildId = parts[2];
+      const action = parts[3];
 
+      const guild = client.guilds.cache.get(guildId) || (await client.guilds.fetch(guildId).catch(() => null));
+      if (!guild) {
+        const embed = boxEmbed({
+          title: 'Veri.',
+          description: `Guild ${guildId} is no longer available.`,
+          footer: 'Veri.'
+        });
+        await interaction.reply({ embeds: [embed], ephemeral: true });
+        return;
+      }
+
+      if (action === 'force') {
+        const userId = interaction.fields.getTextInputValue('user_id').trim();
+        const cfg = getGuildConfig(guild.id);
+
+        let role = null;
+        if (cfg.verificationRoleId) {
+          role = guild.roles.cache.get(cfg.verificationRoleId);
+        }
+        if (!role) {
+          role =
+            guild.roles.cache.find(r => r.name === 'Captcha Verified') ||
+            (await guild.roles.create({
+              name: 'Captcha Verified',
+              reason: 'Veri. verification role'
+            }));
+          cfg.verificationRoleId = role.id;
+          saveData(data);
+        }
+
+        const member = await guild.members.fetch(userId).catch(() => null);
+        if (member && role) {
+          await member.roles.add(role).catch(() => {});
+        }
+
+        const record = getUserRecord(userId);
+        const now = Date.now();
+        if (!record.firstVerified) record.firstVerified = now;
+        record.lastVerification = now;
+        record.servers = Array.from(new Set([...(record.servers || []), guild.id]));
+        saveData(data);
+
+        const embed = boxEmbed({
+          title: 'Veri. Staff – Force Verify User',
+          description:
+            `User ID ${userId} has been force-verified in server ${guild.id} (${guild.name}).\n` +
+            'Their Veri. record has been updated.',
+          footer: 'Veri.'
+        });
+        await dm.send({ embeds: [embed] });
+
+        await interaction.reply({
+          embeds: [
+            boxEmbed({
+              title: 'Veri.',
+              description: 'Force verify details have been sent to your DMs.',
+              footer: 'Veri.'
+            })
+          ],
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (action === 'reset') {
+        const userId = interaction.fields.getTextInputValue('user_id').trim();
+        delete data.verifiedUsers[userId];
+        saveData(data);
+
+        const embed = boxEmbed({
+          title: 'Veri. Staff – Reset User',
+          description:
+            `The Veri. record for user ID ${userId} has been reset.\n` +
+            'They will be treated as a new user by Veri.',
+          footer: 'Veri.'
+        });
+        await dm.send({ embeds: [embed] });
+
+        await interaction.reply({
+          embeds: [
+            boxEmbed({
+              title: 'Veri.',
+              description: 'User reset details have been sent to your DMs.',
+              footer: 'Veri.'
+            })
+          ],
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (action === 'clear') {
+        const userId = interaction.fields.getTextInputValue('user_id').trim();
+        const record = getUserRecord(userId);
+        record.honeypotTriggers = 0;
+        saveData(data);
+
+        const embed = boxEmbed({
+          title: 'Veri. Staff – Clear Honeypot Triggers',
+          description:
+            `All honeypot trigger counts for user ID ${userId} have been cleared.`,
+          footer: 'Veri.'
+        });
+        await dm.send({ embeds: [embed] });
+
+        await interaction.reply({
+          embeds: [
+            boxEmbed({
+              title: 'Veri.',
+              description: 'Honeypot clear details have been sent to your DMs.',
+              footer: 'Veri.'
+            })
+          ],
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (action === 'fails') {
+        const userId = interaction.fields.getTextInputValue('user_id').trim();
+        const record = getUserRecord(userId);
+        record.fails = 0;
+        saveData(data);
+
+        const embed = boxEmbed({
+          title: 'Veri. Staff – Clear Captcha Fails',
+          description:
+            `All captcha fail counts for user ID ${userId} have been cleared.`,
+          footer: 'Veri.'
+        });
+        await dm.send({ embeds: [embed] });
+
+        await interaction.reply({
+          embeds: [
+            boxEmbed({
+              title: 'Veri.',
+              description: 'Captcha fail clear details have been sent to your DMs.',
+              footer: 'Veri.'
+            })
+          ],
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (action === 'system') {
+        const value = interaction.fields.getTextInputValue('dummy').trim().toLowerCase();
+        if (value !== 'run') {
+          await interaction.reply({
+            embeds: [
+              boxEmbed({
+                title: 'Veri.',
+                description: 'System tools cancelled (you did not type "run").',
+                footer: 'Veri.'
+              })
+            ],
+            ephemeral: true
+          });
+          return;
+        }
+
+        const lines = [];
+        lines.push('System Tools Summary:');
+        lines.push('');
+        lines.push(`Guilds tracked: ${Object.keys(data.guilds).length}`);
+        lines.push(`Verified users tracked: ${Object.keys(data.verifiedUsers).length}`);
+        lines.push(
+          `Global blacklist size: ${Array.isArray(data.blacklist) ? data.blacklist.length : 0}`
+        );
+        lines.push('');
+        lines.push('Selected Guild:');
+        const cfg = getGuildConfig(guild.id);
+        lines.push(`ID: ${guild.id}`);
+        lines.push(`Name: ${guild.name}`);
+        lines.push(`Verification channel: ${cfg.verificationChannelId || 'None'}`);
+        lines.push(`Logs channel: ${cfg.logsChannelId || 'None'}`);
+        lines.push(`Honeypot channel: ${cfg.honeypotChannelId || 'None'}`);
+        lines.push(`Verification role: ${cfg.verificationRoleId || 'None'}`);
+        lines.push(`Admin role: ${cfg.adminRoleId || 'None'}`);
+
+        const embed = boxEmbed({
+          title: 'Veri. Staff – System Tools',
+          description: lines.join('\n'),
+          footer: 'Veri.'
+        });
+        await dm.send({ embeds: [embed] });
+
+        await interaction.reply({
+          embeds: [
+            boxEmbed({
+              title: 'Veri.',
+              description: 'System tools summary has been sent to your DMs.',
+              footer: 'Veri.'
+            })
+          ],
+          ephemeral: true
+        });
+        return;
+      }
+
+      return;
+    }
+
+    // original per-guild modals
     if (id === 'vs_remove_server_id_modal') {
       const serverId = interaction.fields.getTextInputValue('server_id').trim();
       delete data.guilds[serverId];
@@ -1185,6 +1755,7 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (id === 'vs_force_verify_modal') {
+      const guild = interaction.guild;
       const userId = interaction.fields.getTextInputValue('user_id').trim();
       const cfg = getGuildConfig(guild.id);
 
@@ -1319,6 +1890,7 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (id === 'vs_system_tools_modal') {
+      const guild = interaction.guild;
       const value = interaction.fields.getTextInputValue('dummy').trim().toLowerCase();
       if (value !== 'run') {
         await interaction.reply({
@@ -1416,6 +1988,18 @@ client.on('messageCreate', async message => {
     const cfg = getGuildConfig(guild.id);
 
     if (num === session.answer) {
+      // already verified in this server
+      if (record.firstVerified && record.servers.includes(guild.id)) {
+        const embed = boxEmbed({
+          title: 'Veri.',
+          description: 'You are already verified in this server.',
+          footer: 'Veri.'
+        });
+        await message.channel.send({ embeds: [embed] });
+        captchaSessions.delete(message.author.id);
+        return;
+      }
+
       const now = Date.now();
       if (!record.firstVerified) record.firstVerified = now;
       record.lastVerification = now;
