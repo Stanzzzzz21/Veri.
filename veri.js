@@ -1,4 +1,4 @@
-
+// veri.js — FINAL, FULL, PATCHED VERSION (ALL FEATURES + FIXES)
 
 import {
   Client,
@@ -16,7 +16,8 @@ import {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  Collection
+  Collection,
+  MessageFlags
 } from "discord.js";
 
 import http from "http";
@@ -388,7 +389,7 @@ client.on("interactionCreate", async interaction => {
               footer: "Veri."
             })
           ],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -404,15 +405,14 @@ client.on("interactionCreate", async interaction => {
               footer: "Veri."
             })
           ],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
       const category = await ensureVeriCategory(guild);
 
       let adminRole =
-        cfg.adminRoleId &&
-        guild.roles.cache.get(cfg.adminRoleId) ||
+        (cfg.adminRoleId && guild.roles.cache.get(cfg.adminRoleId)) ||
         guild.roles.cache.find(r => r.name === "Veri. Admin");
 
       if (!adminRole) {
@@ -485,8 +485,7 @@ client.on("interactionCreate", async interaction => {
             description: "Setup complete.",
             footer: "Veri."
           })
-        ],
-        ephemeral: false
+        ]
       });
     }
 
@@ -501,7 +500,7 @@ client.on("interactionCreate", async interaction => {
               footer: "Veri."
             })
           ],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -593,7 +592,7 @@ client.on("interactionCreate", async interaction => {
             footer: "Veri."
           })
         ],
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -637,7 +636,7 @@ client.on("interactionCreate", async interaction => {
           footer: "Veri."
         });
 
-        return interaction.reply({ embeds: [embed], ephemeral: false });
+        return interaction.reply({ embeds: [embed] });
       }
     }
 
@@ -652,7 +651,7 @@ client.on("interactionCreate", async interaction => {
               footer: "Veri."
             })
           ],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -667,7 +666,7 @@ client.on("interactionCreate", async interaction => {
         footer: "Veri."
       });
 
-      return interaction.reply({ embeds: [embed], ephemeral: false });
+      return interaction.reply({ embeds: [embed] });
     }
 
     // /security_score
@@ -681,7 +680,7 @@ client.on("interactionCreate", async interaction => {
               footer: "Veri."
             })
           ],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -699,7 +698,7 @@ client.on("interactionCreate", async interaction => {
         footer: "Veri."
       });
 
-      return interaction.reply({ embeds: [embed], ephemeral: true });
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
 
     // /veri_resend
@@ -713,7 +712,7 @@ client.on("interactionCreate", async interaction => {
               footer: "Veri."
             })
           ],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -767,7 +766,7 @@ client.on("interactionCreate", async interaction => {
               footer: "Veri."
             })
           ],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -803,7 +802,7 @@ client.on("interactionCreate", async interaction => {
               footer: "Veri."
             })
           ],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
     }
@@ -819,7 +818,7 @@ client.on("interactionCreate", async interaction => {
               footer: "Veri."
             })
           ],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -850,7 +849,7 @@ client.on("interactionCreate", async interaction => {
               footer: "Veri."
             })
           ],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -865,7 +864,7 @@ client.on("interactionCreate", async interaction => {
             footer: "Veri."
           })
         ],
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       setTimeout(() => {
@@ -886,7 +885,7 @@ client.on("interactionCreate", async interaction => {
               footer: "Veri."
             })
           ],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -900,8 +899,7 @@ client.on("interactionCreate", async interaction => {
               description: "Database restored successfully.",
               footer: "Veri."
             })
-          ],
-          ephemeral: false
+          ]
         });
       } catch (err) {
         return interaction.reply({
@@ -912,7 +910,7 @@ client.on("interactionCreate", async interaction => {
               footer: "Veri."
             })
           ],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
     }
@@ -933,7 +931,7 @@ client.on("interactionCreate", async interaction => {
               footer: "Veri."
             })
           ],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -964,7 +962,7 @@ client.on("interactionCreate", async interaction => {
               footer: "Veri."
             })
           ],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -997,7 +995,7 @@ client.on("interactionCreate", async interaction => {
               footer: "Veri."
             })
           ],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       } catch {
         return interaction.reply({
@@ -1009,7 +1007,7 @@ client.on("interactionCreate", async interaction => {
               footer: "Veri."
             })
           ],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
     }
@@ -1288,4 +1286,3 @@ client.on("guildMemberAdd", async member => {
 });
 
 client.login(BOT_TOKEN);
-```
