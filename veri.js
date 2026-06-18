@@ -35,7 +35,7 @@ const PORT = process.env.PORT || 3000;
 const OWNER_ID = '876731494805155851';
 
 // verification banner (bottom of embed)
-const VERIFICATION_BANNER_URL = 'https://kommodo.ai/i/vKeCQW3p83yZItUro2cP';
+const VERIFICATION_BANNER_URL = 'https://i.postimg.cc/SKrVKYhT/Verify-msg-banner.png';
 
 if (!BOT_TOKEN || !CLIENT_ID) {
   console.error('BOT_TOKEN and CLIENT_ID must be set as environment variables.');
