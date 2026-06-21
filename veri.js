@@ -252,12 +252,12 @@ client.commands = new Collection();
 const setupCommand = new SlashCommandBuilder()
   .setName('setup')
   .setDescription('Initial setup for Veri.')
-  .setDefaultMemberPermissions(0); // hidden from non-admins
+   // hidden from non-admins
 
 const settingsCommand = new SlashCommandBuilder()
   .setName('settings')
   .setDescription('Configure Veri. settings.')
-  .setDefaultMemberPermissions(0) // hidden from non-admins
+   // hidden from non-admins
   .addBooleanOption(opt =>
     opt
       .setName('captcha_enabled')
@@ -305,17 +305,17 @@ const playerInfoCommand = new SlashCommandBuilder()
 const staffCommand = new SlashCommandBuilder()
   .setName('veri_staff')
   .setDescription('Veri. Staff control panel (owner only).')
-  .setDefaultMemberPermissions(0); // hidden from non-admins
+   // hidden from non-admins
 
 const securityScoreCommand = new SlashCommandBuilder()
   .setName('security_score')
   .setDescription('Show this server\'s Veri. security score.')
-  .setDefaultMemberPermissions(0); // hidden from non-admins
+   // hidden from non-admins
 
 const resendCommand = new SlashCommandBuilder()
   .setName('veri_resend')
   .setDescription('Resend Veri. verification or honeypot messages.')
-  .setDefaultMemberPermissions(0) // hidden from non-admins
+   // hidden from non-admins
   .addStringOption(opt =>
     opt
       .setName('type')
