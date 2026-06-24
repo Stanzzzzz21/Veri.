@@ -437,12 +437,71 @@ async function sendLog(guild, title, description) {
 // ready
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag} (Veri.)`);
+
   try {
     await registerCommands();
   } catch (e) {
     console.error('Failed to register commands for Veri.:', e);
   }
+
+  // -------------------------------
+  // GLOBAL VERIFICATION AUTO-REPAIR
+  // -------------------------------
+  for (const [guildId, guild] of client.guilds.cache) {
+    try {
+      await guild.members.fetch(); // load all members
+
+      const guildSettings = data.guilds[guildId] || {};
+
+      // 1. Try custom verification role from settings
+      let verificationRole = null;
+
+      if (guildSettings.verificationRoleId) {
+        verificationRole = guild.roles.cache.get(guildSettings.verificationRoleId);
+      }
+
+      // 2. Fallback to "Captcha Verified"
+      if (!verificationRole) {
+        verificationRole = guild.roles.cache.find(r => r.name === "Captcha Verified");
+      }
+
+      if (!verificationRole) {
+        console.log(`No verification role found in guild ${guild.name}. Skipping.`);
+        continue;
+      }
+
+      // 3. Rebuild verifiedUsers for this guild
+      guild.members.cache.forEach(member => {
+        if (member.roles.cache.has(verificationRole.id)) {
+
+          if (!data.verifiedUsers[member.id]) {
+            data.verifiedUsers[member.id] = {
+              firstVerified: Date.now(),
+              servers: [],
+              fails: 0,
+              honeypotTriggers: 0,
+              lastVerification: Date.now()
+            };
+          }
+
+          if (!data.verifiedUsers[member.id].servers.includes(guildId)) {
+            data.verifiedUsers[member.id].servers.push(guildId);
+          }
+        }
+      });
+
+      console.log(`Repaired verified users for guild: ${guild.name}`);
+
+    } catch (err) {
+      console.log(`Error repairing guild ${guildId}:`, err);
+    }
+  }
+
+  // Save database after all guilds processed
+  saveData(data);
+  console.log("Global verification repair complete.");
 });
+
 
 // guild join: welcome message
 client.on('guildCreate', async guild => {
