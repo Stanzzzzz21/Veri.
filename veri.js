@@ -729,7 +729,7 @@ async function buildAdminPanelEmbed(guild, cfg) {
         inline: true
       },
       {
-        name: '⚙️ Configuration',
+        name: 'Configuration',
         value:
           `Honeypot Mode: \`${cfg.honeypotMode || 'global_ban'}\`\n` +
           `Verify Role: ${cfg.verificationRoleId ? `<@&${cfg.verificationRoleId}>` : '`Not set`'}\n` +
@@ -1016,9 +1016,9 @@ client.on('interactionCreate', async interaction => {
         title: 'Veri. Ping',
         description: 'Current latency status for all Veri. services.',
         fields: [
-          { name: '🌐 WebSocket Ping', value: pingBar(wsPing), inline: true },
-          { name: '⚡ API Ping', value: pingBar(apiPing), inline: true },
-          { name: '🍃 MongoDB Ping', value: pingBar(mongoPing), inline: true }
+          { name: 'WebSocket Ping', value: pingBar(wsPing), inline: true },
+          { name: 'API Ping', value: pingBar(apiPing), inline: true },
+          { name: 'MongoDB Ping', value: pingBar(mongoPing), inline: true }
         ],
         footer: 'Veri. — All Systems'
       });
