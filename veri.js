@@ -193,15 +193,6 @@ async function restoreDataFromJson(jsonString) {
 // ---------------------------------------------------------------------------
 // KEEP-ALIVE
 // ---------------------------------------------------------------------------
-http
-  .createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Veri. is running\n');
-  })
-  .listen(PORT, () => {
-    console.log(`Web service running on port ${PORT}`);
-  });
-
 http.createServer((req, res) => {
   if (req.url === "/status") {
     const data = {
@@ -214,8 +205,13 @@ http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify(data));
   }
-}).listen(PORT);
 
+  // default keep-alive response
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end("Veri. is running\n");
+}).listen(PORT, () => {
+  console.log(`Web service running on port ${PORT}`);
+});
 
 // ---------------------------------------------------------------------------
 // THEME / EMBED HELPERS
