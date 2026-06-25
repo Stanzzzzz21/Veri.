@@ -334,11 +334,13 @@ async function sendHoneypotMessage(channel) {
       'ATTENTION, THIS IS A HONEYPOT CHANNEL!\n' +
       "THIS IS A CHANNEL/TRAP USED TO STOP SPAM BOTS, COMMPRMISED ACCOUNTS & WEBHOOKS!\n" +
       'PLEASE DO NOT TYPE HERE YOU COULD GET BANNED FROM EVERY SERVER THE BOT IS IN IF YOU DO!\n\n' +
-      'PLEASE CLOSE THIS CHANNEL AND DO NOT TYPE HERE OR EVEN REACT TO THIS MESSAGE!\n' +,
+      'PLEASE CLOSE THIS CHANNEL AND DO NOT TYPE HERE OR EVEN REACT TO THIS MESSAGE!\n',
     footer: 'Veri. Honeypot'
   });
+
   await channel.send({ embeds: [honeypotEmbed] });
 }
+
 
 // ---------------------------------------------------------------------------
 // HELPER: get or create the Veri. category in a guild
