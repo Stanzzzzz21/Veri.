@@ -329,13 +329,13 @@ async function sendVerificationMessage(channel) {
 // ---------------------------------------------------------------------------
 async function sendHoneypotMessage(channel) {
   const honeypotEmbed = boxEmbed({
-    title: 'DO NOT TYPE HERE',
+    title: '!DO NOT TYPE HERE THIS IS A HONEYPOT CHANNELL!',
     description:
       'This channel is a Veri. honeypot.\n' +
-      "Any message sent here will result in an immediate punishment based on this server's Veri. configuration.\n" +
-      'There are no conversations here, no support here, and no reason to type here.\n\n' +
+      "DO NOT TYPE HERE UNDER ANY CIRCUMSTANCES IT IS USED TO STOP HACKED SPAM ACCOUNTS, WEBHOOKS AND BOTS!\n" +
+      'YOU COULD GET GLOBALLY BANNED IF YOU TYPE HERE!\n\n' +
       'If you are reading this, close this channel and do not interact with it.',
-    footer: 'Veri.'
+    footer: 'Veri. Honeypot'
   });
   await channel.send({ embeds: [honeypotEmbed] });
 }
@@ -870,8 +870,8 @@ client.on('interactionCreate', async interaction => {
         let ownerExtra = '';
         if (userId === OWNER_ID) {
           ownerExtra =
-            '\n\nStatus: OWNER\n' +
-            'About Me: Creator of Veri.\n' +
+            '\n\nWho am I: Owner and developer of Veri. Thanks for using my service! :D\n' +
+            'About Me: Bulgarian developer.\n' +
             'Portfolio: https://stanzportfolio.vercel.app/';
         }
 
@@ -1617,46 +1617,61 @@ client.on('messageCreate', async message => {
   }
 
   // guild messages
-  if (!message.guild || message.author.bot) return;
+if (!message.guild || message.author.bot) return;
 
-  const guild = message.guild;
-  const cfg = await getGuildConfig(guild.id);
+const guild = message.guild;
+const cfg = await getGuildConfig(guild.id);
 
-  if (
-    cfg.honeypotEnabled &&
-    cfg.honeypotChannelId &&
-    message.channel.id === cfg.honeypotChannelId &&
-    guild.channels.cache.has(cfg.honeypotChannelId) &&
-    message.author.id !== OWNER_ID
-  ) {
-    await VerifiedUser.findOneAndUpdate(
-      { userId: message.author.id },
-      { $inc: { honeypotTriggers: 1 } },
-      { upsert: true }
-    );
+if (
+  cfg.honeypotEnabled &&
+  cfg.honeypotChannelId &&
+  message.channel.id === cfg.honeypotChannelId &&
+  guild.channels.cache.has(cfg.honeypotChannelId) &&
+  message.author.id !== OWNER_ID
+) {
+  await VerifiedUser.findOneAndUpdate(
+    { userId: message.author.id },
+    { $inc: { honeypotTriggers: 1 } },
+    { upsert: true }
+  );
 
-    await sendLog(guild, 'Veri. Honeypot Triggered', `User ${message.author.id} sent a message in the honeypot channel.`);
+  await sendLog(
+    guild,
+    'Veri. Honeypot Triggered',
+    `User ${message.author.id} sent a message in the honeypot channel.`
+  );
 
-    const dm = await message.author.createDM().catch(() => null);
-    if (dm) {
-      await dm.send({ embeds: [boxEmbed({ title: 'Veri.', description: 'You typed in a Veri. honeypot channel.\nThis channel exists solely to catch spam bots and malicious users.\n\nIf this was accidental, visit our website and email Veri. staff for assistance.', footer: 'Veri.' })] }).catch(() => {});
-    }
-
-    const member = await guild.members.fetch(message.author.id).catch(() => null);
-    const mode = cfg.honeypotMode || 'global_ban';
-
-    if (mode === 'global_ban') {
-      await addToBlacklist(message.author.id);
-      if (member) await member.ban({ reason: 'Veri. honeypot trigger (global ban)' }).catch(() => {});
-    } else if (mode === 'server_ban') {
-      if (member) await member.ban({ reason: 'Veri. honeypot trigger (server ban)' }).catch(() => {});
-    } else if (mode === 'kick') {
-      if (member) await member.kick('Veri. honeypot trigger (kick)').catch(() => {});
-    }
-
-    return;
+  const dm = await message.author.createDM().catch(() => null);
+  if (dm) {
+    await dm.send({
+      embeds: [
+        boxEmbed({
+          title: 'Veri.',
+          description:
+            'You typed in a Veri. honeypot channel.\nThis channel exists solely to catch spam bots and malicious users.\n\nIf this was accidental, visit our website and email Veri. staff for assistance.',
+          footer: 'Veri.'
+        })
+      ]
+    }).catch(() => {});
   }
-});
+
+  const member = await guild.members.fetch(message.author.id).catch(() => null);
+  const mode = cfg.honeypotMode || 'global_ban';
+
+  if (mode === 'global_ban') {
+    await addToBlacklist(message.author.id);
+    if (member) await member.ban({ reason: 'Veri. honeypot trigger (global ban)' }).catch(() => {});
+  } else if (mode === 'server_ban') {
+    if (member) await member.ban({ reason: 'Veri. honeypot trigger (server ban)' }).catch(() => {});
+  } else if (mode === 'kick') {
+    if (member) await member.kick('Veri. honeypot trigger (kick)').catch(() => {});
+  }
+
+  // ✅ DELETE THE MESSAGE AFTER punishment + logging
+  message.delete().catch(() => {});
+
+  return;
+}
 
 // ---------------------------------------------------------------------------
 // CONNECT TO MONGODB, THEN START THE BOT
