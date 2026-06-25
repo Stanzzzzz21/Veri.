@@ -206,7 +206,6 @@ http.createServer((req, res) => {
     return res.end(JSON.stringify(data));
   }
 
-  // default keep-alive response
   res.writeHead(200, { "Content-Type": "text/plain" });
   res.end("Veri. is running\n");
 }).listen(PORT, () => {
