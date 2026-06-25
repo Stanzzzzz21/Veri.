@@ -202,6 +202,21 @@ http
     console.log(`Web service running on port ${PORT}`);
   });
 
+http.createServer((req, res) => {
+  if (req.url === "/status") {
+    const data = {
+      online: true,
+      uptime: Date.now() - BOT_START_TIME,
+      ping: client.ws.ping,
+      guilds: client.guilds.cache.size,
+      users: client.users.cache.size
+    };
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(data));
+  }
+}).listen(PORT);
+
+
 // ---------------------------------------------------------------------------
 // THEME / EMBED HELPERS
 // ---------------------------------------------------------------------------
