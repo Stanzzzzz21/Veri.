@@ -19,6 +19,7 @@ import {
   Collection
 } from 'discord.js';
 import http from 'http';
+import { MessageFlags } from "discord.js";
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -630,7 +631,8 @@ client.on('interactionCreate', async interaction => {
       if (!(await canUseVeriCommands(interaction))) {
         return interaction.reply({
           embeds: [boxEmbed({ title: 'Veri.', description: 'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, Discord administrators, or official Veri. staff may run Veri. setup.', footer: 'Veri.' })],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
+
         });
       }
 
@@ -640,7 +642,8 @@ client.on('interactionCreate', async interaction => {
       if (cfg.setupComplete) {
         return interaction.reply({
           embeds: [boxEmbed({ title: 'Veri.', description: 'Setup has already been completed for this server. It cannot be run again.', footer: 'Veri.' })],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
+
         });
       }
 
@@ -664,7 +667,7 @@ client.on('interactionCreate', async interaction => {
         const missingNames = missing.map(p => permNames[p]).join(', ');
         return interaction.reply({
           embeds: [boxEmbed({ title: 'Veri.', description: `Setup cannot continue. Veri. is missing required permissions:\n${missingNames}\n\nGrant Veri. these permissions (and make sure its role is high enough in the role list) and try again.`, footer: 'Veri.' })],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -744,7 +747,7 @@ client.on('interactionCreate', async interaction => {
       if (!(await canUseVeriCommands(interaction))) {
         return interaction.reply({
           embeds: [boxEmbed({ title: 'Veri.', description: 'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, Discord administrators, or official Veri. staff may run Veri. settings.', footer: 'Veri.' })],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -921,7 +924,7 @@ client.on('interactionCreate', async interaction => {
       if (!(await canUseVeriCommands(interaction))) {
         return interaction.reply({
           embeds: [boxEmbed({ title: 'Veri.', description: 'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, Discord administrators, or official Veri. staff may view the security score.', footer: 'Veri.' })],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -945,7 +948,7 @@ client.on('interactionCreate', async interaction => {
       if (!(await canUseVeriCommands(interaction))) {
         return interaction.reply({
           embeds: [boxEmbed({ title: 'Veri.', description: 'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, Discord administrators, or official Veri. staff may run Veri. resend.', footer: 'Veri.' })],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -963,7 +966,7 @@ client.on('interactionCreate', async interaction => {
         }
 
         await sendVerificationMessage(verificationChannel);
-        await interaction.reply({ embeds: [boxEmbed({ title: 'Veri.', description: 'Verification message has been re-sent.', footer: 'Veri.' })] });
+        await interaction.reply({ embeds: [boxEmbed({ title: 'Veri.', description: 'Verification message has been re-sent.', footer: 'Veri.' })], flags: MessageFlags.Ephemeral });
         await sendLog(guild, 'Veri. Verification Message Re-Sent', 'An administrator re-sent the verification message using /veri_resend.');
         return;
       }
@@ -991,7 +994,7 @@ client.on('interactionCreate', async interaction => {
       if (interaction.user.id !== OWNER_ID) {
         return interaction.reply({
           embeds: [boxEmbed({ title: 'Veri.', description: 'ERROR: Only official Veri. staff can run this.\nIf you have any issues, visit our website.', footer: 'Veri.' })],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
