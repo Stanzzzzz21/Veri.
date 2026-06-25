@@ -19,7 +19,6 @@ import {
   Collection
 } from 'discord.js';
 import http from 'http';
-import { MessageFlags } from "discord.js";
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -330,12 +329,12 @@ async function sendVerificationMessage(channel) {
 // ---------------------------------------------------------------------------
 async function sendHoneypotMessage(channel) {
   const honeypotEmbed = boxEmbed({
-    title: '!DO NOT TYPE HERE THIS IS A HONEYPOT CHANNELL!',
+    title: 'DO NOT TYPE HERE',
     description:
-      'This channel is a Veri. honeypot.\n' +
-      "DO NOT TYPE HERE UNDER ANY CIRCUMSTANCES IT IS USED TO STOP HACKED SPAM ACCOUNTS, WEBHOOKS AND BOTS!\n" +
-      'YOU COULD GET GLOBALLY BANNED IF YOU TYPE HERE!\n\n' +
-      'If you are reading this, close this channel and do not interact with it.',
+      'ATTENTION, THIS IS A HONEYPOT CHANNEL!\n' +
+      "THIS IS A CHANNEL/TRAP USED TO STOP SPAM BOTS, COMMPRMISED ACCOUNTS & WEBHOOKS!\n" +
+      'PLEASE DO NOT TYPE HERE YOU COULD GET BANNED FROM EVERY SERVER THE BOT IS IN IF YOU DO!\n\n' +
+      'PLEASE CLOSE THIS CHANNEL AND DO NOT TYPE HERE OR EVEN REACT TO THIS MESSAGE!\n' +,
     footer: 'Veri. Honeypot'
   });
   await channel.send({ embeds: [honeypotEmbed] });
@@ -631,8 +630,7 @@ client.on('interactionCreate', async interaction => {
       if (!(await canUseVeriCommands(interaction))) {
         return interaction.reply({
           embeds: [boxEmbed({ title: 'Veri.', description: 'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, Discord administrators, or official Veri. staff may run Veri. setup.', footer: 'Veri.' })],
-          flags: MessageFlags.Ephemeral
-
+          ephemeral: true
         });
       }
 
@@ -642,8 +640,7 @@ client.on('interactionCreate', async interaction => {
       if (cfg.setupComplete) {
         return interaction.reply({
           embeds: [boxEmbed({ title: 'Veri.', description: 'Setup has already been completed for this server. It cannot be run again.', footer: 'Veri.' })],
-          flags: MessageFlags.Ephemeral
-
+          ephemeral: true
         });
       }
 
@@ -667,7 +664,7 @@ client.on('interactionCreate', async interaction => {
         const missingNames = missing.map(p => permNames[p]).join(', ');
         return interaction.reply({
           embeds: [boxEmbed({ title: 'Veri.', description: `Setup cannot continue. Veri. is missing required permissions:\n${missingNames}\n\nGrant Veri. these permissions (and make sure its role is high enough in the role list) and try again.`, footer: 'Veri.' })],
-          flags: MessageFlags.Ephemeral
+          ephemeral: true
         });
       }
 
@@ -747,7 +744,7 @@ client.on('interactionCreate', async interaction => {
       if (!(await canUseVeriCommands(interaction))) {
         return interaction.reply({
           embeds: [boxEmbed({ title: 'Veri.', description: 'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, Discord administrators, or official Veri. staff may run Veri. settings.', footer: 'Veri.' })],
-          flags: MessageFlags.Ephemeral
+          ephemeral: true
         });
       }
 
@@ -873,8 +870,8 @@ client.on('interactionCreate', async interaction => {
         let ownerExtra = '';
         if (userId === OWNER_ID) {
           ownerExtra =
-            '\n\nWho am I: Owner and developer of Veri. Thanks for using my service! :D\n' +
-            'About Me: Bulgarian developer.\n' +
+            '\n\nStatus: OWNER\n' +
+            'About Me: Creator of Veri. Thanks for using my service, it is appreciated! :D\n' +
             'Portfolio: https://stanzportfolio.vercel.app/';
         }
 
@@ -924,7 +921,7 @@ client.on('interactionCreate', async interaction => {
       if (!(await canUseVeriCommands(interaction))) {
         return interaction.reply({
           embeds: [boxEmbed({ title: 'Veri.', description: 'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, Discord administrators, or official Veri. staff may view the security score.', footer: 'Veri.' })],
-          flags: MessageFlags.Ephemeral
+          ephemeral: true
         });
       }
 
@@ -948,7 +945,7 @@ client.on('interactionCreate', async interaction => {
       if (!(await canUseVeriCommands(interaction))) {
         return interaction.reply({
           embeds: [boxEmbed({ title: 'Veri.', description: 'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, Discord administrators, or official Veri. staff may run Veri. resend.', footer: 'Veri.' })],
-          flags: MessageFlags.Ephemeral
+          ephemeral: true
         });
       }
 
@@ -966,7 +963,7 @@ client.on('interactionCreate', async interaction => {
         }
 
         await sendVerificationMessage(verificationChannel);
-        await interaction.reply({ embeds: [boxEmbed({ title: 'Veri.', description: 'Verification message has been re-sent.', footer: 'Veri.' })], flags: MessageFlags.Ephemeral });
+        await interaction.reply({ embeds: [boxEmbed({ title: 'Veri.', description: 'Verification message has been re-sent.', footer: 'Veri.' })] });
         await sendLog(guild, 'Veri. Verification Message Re-Sent', 'An administrator re-sent the verification message using /veri_resend.');
         return;
       }
@@ -994,7 +991,7 @@ client.on('interactionCreate', async interaction => {
       if (interaction.user.id !== OWNER_ID) {
         return interaction.reply({
           embeds: [boxEmbed({ title: 'Veri.', description: 'ERROR: Only official Veri. staff can run this.\nIf you have any issues, visit our website.', footer: 'Veri.' })],
-          flags: MessageFlags.Ephemeral
+          ephemeral: true
         });
       }
 
@@ -1620,61 +1617,46 @@ client.on('messageCreate', async message => {
   }
 
   // guild messages
-if (!message.guild || message.author.bot) return;
+  if (!message.guild || message.author.bot) return;
 
-const guild = message.guild;
-const cfg = await getGuildConfig(guild.id);
+  const guild = message.guild;
+  const cfg = await getGuildConfig(guild.id);
 
-if (
-  cfg.honeypotEnabled &&
-  cfg.honeypotChannelId &&
-  message.channel.id === cfg.honeypotChannelId &&
-  guild.channels.cache.has(cfg.honeypotChannelId) &&
-  message.author.id !== OWNER_ID
-) {
-  await VerifiedUser.findOneAndUpdate(
-    { userId: message.author.id },
-    { $inc: { honeypotTriggers: 1 } },
-    { upsert: true }
-  );
+  if (
+    cfg.honeypotEnabled &&
+    cfg.honeypotChannelId &&
+    message.channel.id === cfg.honeypotChannelId &&
+    guild.channels.cache.has(cfg.honeypotChannelId) &&
+    message.author.id !== OWNER_ID
+  ) {
+    await VerifiedUser.findOneAndUpdate(
+      { userId: message.author.id },
+      { $inc: { honeypotTriggers: 1 } },
+      { upsert: true }
+    );
 
-  await sendLog(
-    guild,
-    'Veri. Honeypot Triggered',
-    `User ${message.author.id} sent a message in the honeypot channel.`
-  );
+    await sendLog(guild, 'Veri. Honeypot Triggered', `User ${message.author.id} sent a message in the honeypot channel.`);
 
-  const dm = await message.author.createDM().catch(() => null);
-  if (dm) {
-    await dm.send({
-      embeds: [
-        boxEmbed({
-          title: 'Veri.',
-          description:
-            'You typed in a Veri. honeypot channel.\nThis channel exists solely to catch spam bots and malicious users.\n\nIf this was accidental, visit our website and email Veri. staff for assistance.',
-          footer: 'Veri.'
-        })
-      ]
-    }).catch(() => {});
+    const dm = await message.author.createDM().catch(() => null);
+    if (dm) {
+      await dm.send({ embeds: [boxEmbed({ title: 'Veri.', description: 'You typed in a Veri. honeypot channel.\nThis channel exists solely to catch spam bots and malicious users.\n\nIf this was accidental, visit our website and email Veri. staff for assistance.', footer: 'Veri.' })] }).catch(() => {});
+    }
+
+    const member = await guild.members.fetch(message.author.id).catch(() => null);
+    const mode = cfg.honeypotMode || 'global_ban';
+
+    if (mode === 'global_ban') {
+      await addToBlacklist(message.author.id);
+      if (member) await member.ban({ reason: 'Veri. honeypot trigger (global ban)' }).catch(() => {});
+    } else if (mode === 'server_ban') {
+      if (member) await member.ban({ reason: 'Veri. honeypot trigger (server ban)' }).catch(() => {});
+    } else if (mode === 'kick') {
+      if (member) await member.kick('Veri. honeypot trigger (kick)').catch(() => {});
+    }
+
+    return;
   }
-
-  const member = await guild.members.fetch(message.author.id).catch(() => null);
-  const mode = cfg.honeypotMode || 'global_ban';
-
-  if (mode === 'global_ban') {
-    await addToBlacklist(message.author.id);
-    if (member) await member.ban({ reason: 'Veri. honeypot trigger (global ban)' }).catch(() => {});
-  } else if (mode === 'server_ban') {
-    if (member) await member.ban({ reason: 'Veri. honeypot trigger (server ban)' }).catch(() => {});
-  } else if (mode === 'kick') {
-    if (member) await member.kick('Veri. honeypot trigger (kick)').catch(() => {});
-  }
-
-  // ✅ DELETE THE MESSAGE AFTER punishment + logging
-  message.delete().catch(() => {});
-
-  return;
-}
+});
 
 // ---------------------------------------------------------------------------
 // CONNECT TO MONGODB, THEN START THE BOT
