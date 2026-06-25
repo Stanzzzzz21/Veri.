@@ -223,7 +223,7 @@ function boxEmbed({ title, description, fields = [], footer }) {
 function panelEmbed({ title, description, fields = [], footer, thumbnail }) {
   const embed = new EmbedBuilder()
     .setColor(THEME_COLOR)
-    .setTitle(`⚙️  ${title}`)
+    .setTitle(`${title}`)
     .setDescription(description || '')
     .setTimestamp();
 
@@ -774,13 +774,13 @@ function buildAdminPanelRows(cfg) {
 
   const honeypotModeMenu = new StringSelectMenuBuilder()
     .setCustomId('ap_honeypot_mode')
-    .setPlaceholder('🪤 Set Honeypot Mode...')
+    .setPlaceholder('Set Honeypot Mode...')
     .addOptions([
-      { label: '☠️ Global Ban (default)', value: 'global_ban', description: 'Ban from all Veri. servers', default: cfg.honeypotMode === 'global_ban' || !cfg.honeypotMode },
-      { label: '🔨 Server Ban Only', value: 'server_ban', description: 'Ban from this server only', default: cfg.honeypotMode === 'server_ban' },
-      { label: '👢 Kick Only', value: 'kick', description: 'Kick from this server', default: cfg.honeypotMode === 'kick' },
-      { label: '⚠️ Warn Only', value: 'warn', description: 'Send a warning message', default: cfg.honeypotMode === 'warn' },
-      { label: '📩 DM Warning Only', value: 'dm_only', description: 'Send a DM warning only', default: cfg.honeypotMode === 'dm_only' }
+      { label: 'Global Ban (default)', value: 'global_ban', description: 'Ban from all Veri. servers', default: cfg.honeypotMode === 'global_ban' || !cfg.honeypotMode },
+      { label: 'Server Ban Only', value: 'server_ban', description: 'Ban from this server only', default: cfg.honeypotMode === 'server_ban' },
+      { label: 'Kick Only', value: 'kick', description: 'Kick from this server', default: cfg.honeypotMode === 'kick' },
+      { label: 'Warn Only', value: 'warn', description: 'Send a warning message', default: cfg.honeypotMode === 'warn' },
+      { label: 'DM Warning Only', value: 'dm_only', description: 'Send a DM warning only', default: cfg.honeypotMode === 'dm_only' }
     ]);
 
   const row4 = new ActionRowBuilder().addComponents(honeypotModeMenu);
@@ -1008,7 +1008,7 @@ client.on('interactionCreate', async interaction => {
       const pingBar = (ms) => {
         if (ms < 0) return '`N/A`';
         if (ms < 100) return `\`${ms}ms\` 🟢`;
-        if (ms < 250) return `\`${ms}ms\` 🟡`;
+        if (ms < 250) return `\`${ms}ms\``;
         return `\`${ms}ms\` 🔴`;
       };
 
