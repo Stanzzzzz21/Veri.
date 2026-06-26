@@ -1730,7 +1730,7 @@ client.on('interactionCreate', async interaction => {
           ownerExtra =
             '\n\nStatus: OWNER\n' +
             'About Me: Creator of Veri. Thanks for using my service, it is appreciated! :D\n' +
-            'Portfolio: https://stanzportfolio.vercel.app/';
+            'Portfolio: https://www.stanzdev.uk/';
         }
 
         if (!record) {
