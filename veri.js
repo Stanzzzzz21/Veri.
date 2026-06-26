@@ -2683,7 +2683,6 @@ client.on('interactionCreate', async interaction => {
       await saveGuildConfig(cfg);
       await sendLog(guild, 'Veri. Roles Updated', `Roles updated by ${interaction.user.id}: ${changes.join(', ') || 'No changes.'}`);
 
-      const updatedCfg = await getGuildConfig(guild.id);
       await interaction.reply({
         embeds: [boxEmbed({
           title: 'Veri. Roles Updated',
@@ -2692,7 +2691,6 @@ client.on('interactionCreate', async interaction => {
         })],
         ephemeral: true
       });
-      await interaction.message.edit({ embeds: [await buildAdminPanelEmbed(guild, updatedCfg)], components: buildAdminPanelRows(updatedCfg) }).catch(() => {});
       return;
     }
 
@@ -2746,7 +2744,6 @@ client.on('interactionCreate', async interaction => {
       await saveGuildConfig(cfg);
       await sendLog(guild, 'Veri. Settings Updated', `Settings updated by ${interaction.user.id}: ${changes.join(', ') || 'No changes.'}`);
 
-      const updatedCfg = await getGuildConfig(guild.id);
       await interaction.reply({
         embeds: [boxEmbed({
           title: 'Veri. Settings Updated',
@@ -2755,7 +2752,6 @@ client.on('interactionCreate', async interaction => {
         })],
         ephemeral: true
       });
-      await interaction.message.edit({ embeds: [await buildAdminPanelEmbed(guild, updatedCfg)], components: buildAdminPanelRows(updatedCfg) }).catch(() => {});
       return;
     }
 
