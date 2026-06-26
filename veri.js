@@ -2117,7 +2117,7 @@ client.on('interactionCreate', async interaction => {
           new ActionRowBuilder().addComponents(
             new TextInputBuilder()
               .setCustomId('verify_cooldown')
-              .setLabel('Verification cooldown (seconds, default 30)')
+              .setLabel('Cooldown: seconds (default 30)')
               .setStyle(TextInputStyle.Short)
               .setRequired(false)
               .setPlaceholder(`${cfg.verificationCooldownSeconds || 30}`)
@@ -2125,7 +2125,7 @@ client.on('interactionCreate', async interaction => {
           new ActionRowBuilder().addComponents(
             new TextInputBuilder()
               .setCustomId('join_age_days')
-              .setLabel('Join-Age minimum days (default 7)')
+              .setLabel('Join-Age: days (default 7)')
               .setStyle(TextInputStyle.Short)
               .setRequired(false)
               .setPlaceholder(`${cfg.joinAgeMinDays || 7}`)
@@ -2133,7 +2133,7 @@ client.on('interactionCreate', async interaction => {
           new ActionRowBuilder().addComponents(
             new TextInputBuilder()
               .setCustomId('token_logger_min_age')
-              .setLabel('Anti-Token-Logger minimum account age (days)')
+              .setLabel('Token-Logger min age (days)')
               .setStyle(TextInputStyle.Short)
               .setRequired(false)
               .setPlaceholder(`${cfg.antiTokenLoggerMinAge || 7}`)
@@ -2141,7 +2141,7 @@ client.on('interactionCreate', async interaction => {
           new ActionRowBuilder().addComponents(
             new TextInputBuilder()
               .setCustomId('raid_threshold')
-              .setLabel('Anti-Raid: joins to trigger (default 10)')
+              .setLabel('Raid: joins trigger (default 10)')
               .setStyle(TextInputStyle.Short)
               .setRequired(false)
               .setPlaceholder(`${cfg.antiRaidThreshold || 10}`)
@@ -2149,7 +2149,7 @@ client.on('interactionCreate', async interaction => {
           new ActionRowBuilder().addComponents(
             new TextInputBuilder()
               .setCustomId('raid_window')
-              .setLabel('Anti-Raid: time window in seconds (default 30)')
+              .setLabel('Raid window: seconds (default 30)')
               .setStyle(TextInputStyle.Short)
               .setRequired(false)
               .setPlaceholder(`${cfg.antiRaidWindowSeconds || 30}`)
