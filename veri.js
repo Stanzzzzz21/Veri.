@@ -64,10 +64,19 @@ const guildConfigSchema = new mongoose.Schema({
   honeypotEnabled: { type: Boolean, default: true },
   honeypotMode: { type: String, default: 'global_ban' },
   setupComplete: { type: Boolean, default: false },
-  // new security feature toggles
-  antiVpnEnabled: { type: Boolean, default: false },
+  // Anti-Token-Logger
   antiTokenLoggerEnabled: { type: Boolean, default: false },
-  antiMassDmEnabled: { type: Boolean, default: false }
+  antiTokenLoggerMinAge: { type: Number, default: 7 },
+  // Join-Age Requirement
+  joinAgeEnabled: { type: Boolean, default: false },
+  joinAgeMinDays: { type: Number, default: 7 },
+  // Anti-Raid Cooldown
+  antiRaidEnabled: { type: Boolean, default: false },
+  antiRaidThreshold: { type: Number, default: 10 },
+  antiRaidWindowSeconds: { type: Number, default: 30 },
+  raidLocked: { type: Boolean, default: false },
+  // Verification Cooldown (seconds between verify attempts per user)
+  verificationCooldownSeconds: { type: Number, default: 30 }
 });
 
 const verifiedUserSchema = new mongoose.Schema({
@@ -101,11 +110,10 @@ const statsDigestSchema = new mongoose.Schema({
 });
 statsDigestSchema.index({ userId: 1, guildId: 1 }, { unique: true });
 
-// DM tracking for anti-mass-dm
-const dmTrackSchema = new mongoose.Schema({
-  userId: { type: String, required: true, unique: true },
-  count: { type: Number, default: 0 },
-  windowStart: { type: Number, default: Date.now }
+// Raid join tracking (in-memory, but schema for persistence if needed)
+const raidJoinSchema = new mongoose.Schema({
+  guildId: { type: String, required: true, unique: true },
+  joins: { type: [Number], default: [] } // timestamps of recent joins
 });
 
 const GuildConfig = mongoose.model('GuildConfig', guildConfigSchema);
@@ -113,7 +121,16 @@ const VerifiedUser = mongoose.model('VerifiedUser', verifiedUserSchema);
 const Blacklist = mongoose.model('Blacklist', blacklistSchema);
 const ServerBackup = mongoose.model('ServerBackup', serverBackupSchema);
 const StatsDigest = mongoose.model('StatsDigest', statsDigestSchema);
-const DmTrack = mongoose.model('DmTrack', dmTrackSchema);
+
+// ---------------------------------------------------------------------------
+// IN-MEMORY TRACKING
+// ---------------------------------------------------------------------------
+// { userId -> { guildId, answer } }
+const captchaSessions = new Map();
+// { userId -> lastAttemptTimestamp }
+const verifyCooldowns = new Map();
+// { guildId -> [timestamps] } for raid detection
+const raidJoinTracker = new Map();
 
 // ---------------------------------------------------------------------------
 // DB HELPERS
@@ -194,7 +211,7 @@ async function restoreDataFromJson(jsonString) {
 // KEEP-ALIVE
 // ---------------------------------------------------------------------------
 http.createServer((req, res) => {
-  if (req.url === "/status") {
+  if (req.url === '/status') {
     const data = {
       online: true,
       uptime: Date.now() - BOT_START_TIME,
@@ -202,16 +219,14 @@ http.createServer((req, res) => {
       guilds: client.guilds.cache.size,
       users: client.users.cache.size
     };
-    res.writeHead(200, { "Content-Type": "application/json" });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify(data));
   }
-
-  res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Veri. is running\n");
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Veri. is running\n');
 }).listen(PORT, () => {
   console.log(`Web service running on port ${PORT}`);
 });
-
 
 // ---------------------------------------------------------------------------
 // THEME / EMBED HELPERS
@@ -223,25 +238,20 @@ function boxEmbed({ title, description, fields = [], footer }) {
     .setColor(THEME_COLOR)
     .setTitle(title || 'Veri.')
     .setDescription(description || '');
-
   if (fields.length > 0) embed.addFields(fields);
   embed.setFooter({ text: footer || 'Veri.' });
-
   return embed;
 }
 
-// Richer styled embed for panels
 function panelEmbed({ title, description, fields = [], footer, thumbnail }) {
   const embed = new EmbedBuilder()
     .setColor(THEME_COLOR)
     .setTitle(`${title}`)
     .setDescription(description || '')
     .setTimestamp();
-
   if (fields.length > 0) embed.addFields(fields);
   if (thumbnail) embed.setThumbnail(thumbnail);
-  embed.setFooter({ text: footer || 'Veri. • Powered by Veri. Security', iconURL: null });
-
+  embed.setFooter({ text: footer || 'Veri. Security', iconURL: null });
   return embed;
 }
 
@@ -267,11 +277,6 @@ function getRandomCaptcha() {
   return { file, answer };
 }
 
-// in-memory captcha sessions
-const captchaSessions = new Map();
-// in-memory DM count tracking for anti-mass-DM  { userId -> { count, windowStart } }
-const dmCountTracker = new Map();
-
 // ---------------------------------------------------------------------------
 // DISCORD CLIENT
 // ---------------------------------------------------------------------------
@@ -296,38 +301,6 @@ client.commands = new Collection();
 const setupCommand = new SlashCommandBuilder()
   .setName('setup')
   .setDescription('Initial setup for Veri.');
-
-const settingsCommand = new SlashCommandBuilder()
-  .setName('settings')
-  .setDescription('Configure Veri. settings.')
-  .addBooleanOption(opt =>
-    opt.setName('captcha_enabled').setDescription('Enable or disable captcha.')
-  )
-  .addBooleanOption(opt =>
-    opt.setName('honeypot_enabled').setDescription('Enable or disable honeypot.')
-  )
-  .addStringOption(opt =>
-    opt.setName('honeypot_mode').setDescription('Set honeypot punishment mode.')
-      .addChoices(
-        { name: 'Global Ban (default)', value: 'global_ban' },
-        { name: 'Server Ban Only', value: 'server_ban' },
-        { name: 'Kick Only', value: 'kick' },
-        { name: 'Warn Only', value: 'warn' },
-        { name: 'DM Warning Only', value: 'dm_only' }
-      )
-  )
-  .addRoleOption(opt =>
-    opt.setName('verification_role').setDescription('Role to give when verified.')
-  )
-  .addBooleanOption(opt =>
-    opt.setName('anti_vpn').setDescription('Enable or disable Anti-VPN/Proxy detection.')
-  )
-  .addBooleanOption(opt =>
-    opt.setName('anti_token_logger').setDescription('Enable or disable Anti-Token-Logger detection.')
-  )
-  .addBooleanOption(opt =>
-    opt.setName('anti_mass_dm').setDescription('Enable or disable Anti-Mass-DM detection.')
-  );
 
 const adminPanelCommand = new SlashCommandBuilder()
   .setName('admin-panel')
@@ -390,7 +363,6 @@ async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
   const commands = [
     setupCommand.toJSON(),
-    settingsCommand.toJSON(),
     adminPanelCommand.toJSON(),
     roleSyncCommand.toJSON(),
     serverBackupCommand.toJSON(),
@@ -441,7 +413,7 @@ async function sendHoneypotMessage(channel) {
     title: 'DO NOT TYPE HERE',
     description:
       'ATTENTION, THIS IS A HONEYPOT CHANNEL!\n' +
-      "THIS IS A CHANNEL/TRAP USED TO STOP SPAM BOTS, COMPROMISED ACCOUNTS & WEBHOOKS!\n" +
+      'THIS IS A CHANNEL/TRAP USED TO STOP SPAM BOTS, COMPROMISED ACCOUNTS & WEBHOOKS!\n' +
       'PLEASE DO NOT TYPE HERE YOU COULD GET BANNED FROM EVERY SERVER THE BOT IS IN IF YOU DO!\n\n' +
       'PLEASE CLOSE THIS CHANNEL AND DO NOT TYPE HERE OR EVEN REACT TO THIS MESSAGE!\n',
     footer: 'Veri. Honeypot'
@@ -555,9 +527,9 @@ async function computeSecurityScore(guild) {
   if (cfg.logsChannelId && guild.channels.cache.get(cfg.logsChannelId)) score += 10;
   if (cfg.verificationRoleId && guild.roles.cache.get(cfg.verificationRoleId)) score += 10;
   if (cfg.adminRoleId && guild.roles.cache.get(cfg.adminRoleId)) score += 10;
-  if (cfg.antiVpnEnabled) score += 5;
   if (cfg.antiTokenLoggerEnabled) score += 5;
-  if (cfg.antiMassDmEnabled) score += 5;
+  if (cfg.joinAgeEnabled) score += 5;
+  if (cfg.antiRaidEnabled) score += 5;
 
   const blacklistSize = await Blacklist.countDocuments();
   const penalty = Math.min(20, blacklistSize * 2);
@@ -605,7 +577,6 @@ async function sendStatsDigest(userId, guildId) {
     if (!guild) return;
 
     const cfg = await getGuildConfig(guildId);
-    // Check they still have admin role
     const member = await guild.members.fetch(userId).catch(() => null);
     if (!member) return;
     const hasAccess = (
@@ -614,7 +585,6 @@ async function sendStatsDigest(userId, guildId) {
       (cfg.adminRoleId && member.roles.cache.has(cfg.adminRoleId))
     );
     if (!hasAccess) {
-      // Remove their subscription
       await StatsDigest.deleteOne({ userId, guildId });
       return;
     }
@@ -635,7 +605,7 @@ async function sendStatsDigest(userId, guildId) {
     if (!dm) return;
 
     const embed = panelEmbed({
-      title: `Stats Digest — ${guild.name}`,
+      title: `Stats Digest - ${guild.name}`,
       description: `Your scheduled stats report for **${guild.name}**`,
       fields: [
         { name: 'Security Score', value: `${score}/100 (${status})`, inline: true },
@@ -645,9 +615,9 @@ async function sendStatsDigest(userId, guildId) {
         { name: 'Total Captcha Fails', value: `${recentFails}`, inline: true },
         { name: 'Honeypot Triggers', value: `${recentHoneypot}`, inline: true },
         { name: 'Global Blacklist Size', value: `${blacklistSize}`, inline: true },
-        { name: ' All Verified Users', value: `${totalUsers}`, inline: true }
+        { name: 'All Verified Users', value: `${totalUsers}`, inline: true }
       ],
-      footer: `Veri. Stats Digest • ${guild.name}`
+      footer: `Veri. Stats Digest - ${guild.name}`
     });
 
     await dm.send({ embeds: [embed] });
@@ -657,7 +627,6 @@ async function sendStatsDigest(userId, guildId) {
   }
 }
 
-// Check and send due digests every 10 minutes
 async function checkDigests() {
   try {
     const now = Date.now();
@@ -680,35 +649,157 @@ async function checkDigests() {
 }
 
 // ---------------------------------------------------------------------------
-// ANTI-TOKEN-LOGGER CHECK
+// ANTI-TOKEN-LOGGER CHECK (improved)
 // ---------------------------------------------------------------------------
 async function checkTokenLogger(member, cfg) {
   if (!cfg.antiTokenLoggerEnabled) return false;
   const user = member.user;
-  // Flag if: no avatar, account age < 7 days
   const accountAge = Date.now() - user.createdTimestamp;
-  const sevenDays = 7 * 24 * 60 * 60 * 1000;
+  const minAgeDays = cfg.antiTokenLoggerMinAge || 7;
+  const minAgeMs = minAgeDays * 24 * 60 * 60 * 1000;
   const noAvatar = !user.avatar;
-  const veryNew = accountAge < sevenDays;
+  const tooNew = accountAge < minAgeMs;
+  // Also flag if: no avatar AND no banner AND default username pattern (User + digits)
+  const defaultUsername = /^[Uu]ser\d{4,}$/.test(user.username);
 
-  if (noAvatar && veryNew) {
-    await sendLog(member.guild, 'Veri. Anti-Token-Logger', `Flagged user ${user.id} (${user.username}) — no avatar + account age < 7 days. They have been kicked and must verify again.`);
+  // Flag if no avatar and too new, OR no avatar and default username pattern
+  if (noAvatar && (tooNew || defaultUsername)) {
+    const reason = tooNew
+      ? `no avatar + account age under ${minAgeDays} days`
+      : 'no avatar + default username pattern (suspected compromised/bot account)';
+
+    await sendLog(
+      member.guild,
+      'Veri. Anti-Token-Logger',
+      `Flagged user ${user.id} (${user.username}) — ${reason}. User has been kicked.`
+    );
     try {
       const dm = await user.createDM().catch(() => null);
       if (dm) {
         await dm.send({
           embeds: [boxEmbed({
             title: 'Veri. Security Alert',
-            description: 'Your account has been flagged by Veri. Anti-Token-Logger protection.\n\nYour account profile appears suspicious (no avatar, very new account).\n\nYou have been removed from the server for security reasons.\nIf this is a mistake, please contact a server administrator.',
+            description:
+              'Your account has been flagged by Veri. Anti-Token-Logger protection.\n\n' +
+              `Reason: ${reason}.\n\n` +
+              'You have been removed from the server for security reasons.\n' +
+              'If this is a mistake, please contact a server administrator.',
             footer: 'Veri. Anti-Token-Logger'
           })]
         }).catch(() => {});
       }
-      await member.kick('Veri. Anti-Token-Logger: suspicious account profile').catch(() => {});
+      await member.kick(`Veri. Anti-Token-Logger: ${reason}`).catch(() => {});
     } catch {
       // ignore
     }
     return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// JOIN-AGE REQUIREMENT CHECK
+// ---------------------------------------------------------------------------
+async function checkJoinAge(member, cfg) {
+  if (!cfg.joinAgeEnabled) return false;
+  const minDays = cfg.joinAgeMinDays || 7;
+  const minAgeMs = minDays * 24 * 60 * 60 * 1000;
+  const accountAge = Date.now() - member.user.createdTimestamp;
+
+  if (accountAge < minAgeMs) {
+    try {
+      const dm = await member.user.createDM().catch(() => null);
+      if (dm) {
+        const ageDays = Math.floor(accountAge / (24 * 60 * 60 * 1000));
+        await dm.send({
+          embeds: [boxEmbed({
+            title: 'Veri. - Account Too New',
+            description:
+              `You were removed from **${member.guild.name}** because your account does not meet the minimum age requirement.\n\n` +
+              `Your account is **${ageDays} day(s)** old.\n` +
+              `The minimum required age is **${minDays} day(s)**.\n\n` +
+              'Please wait until your account is old enough and try joining again.\n' +
+              'If you believe this is a mistake, contact a server administrator.',
+            footer: 'Veri. Join-Age Requirement'
+          })]
+        }).catch(() => {});
+      }
+      await member.kick(`Veri. Join-Age: account under ${minDays} days old`).catch(() => {});
+      await sendLog(
+        member.guild,
+        'Veri. Join-Age Block',
+        `User ${member.user.id} (${member.user.username}) was removed — account too new (${Math.floor(accountAge / 86400000)} days old, minimum is ${minDays}).`
+      );
+    } catch {
+      // ignore
+    }
+    return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// ANTI-RAID DETECTION
+// ---------------------------------------------------------------------------
+async function checkAntiRaid(member, cfg) {
+  if (!cfg.antiRaidEnabled) return false;
+
+  const guildId = member.guild.id;
+  const now = Date.now();
+  const windowMs = (cfg.antiRaidWindowSeconds || 30) * 1000;
+  const threshold = cfg.antiRaidThreshold || 10;
+
+  // Get or init tracker for this guild
+  let joins = raidJoinTracker.get(guildId) || [];
+  // Remove old entries outside the window
+  joins = joins.filter(ts => now - ts < windowMs);
+  joins.push(now);
+  raidJoinTracker.set(guildId, joins);
+
+  if (joins.length >= threshold) {
+    // Only trigger once per raid lock
+    if (!cfg.raidLocked) {
+      cfg.raidLocked = true;
+      await saveGuildConfig(cfg);
+
+      // Alert in logs channel
+      await sendLog(
+        member.guild,
+        'VERI. ANTI-RAID - RAID DETECTED',
+        `Raid detected! ${joins.length} users joined within ${cfg.antiRaidWindowSeconds}s.\n` +
+        `Verification has been locked. Honeypot mode temporarily set to global_ban for all triggered users.\n` +
+        `Open /admin-panel to manage the raid lock and unlock verification when safe.`
+      );
+
+      // Alert admins via DM if admin role is set
+      if (cfg.adminRoleId) {
+        try {
+          await member.guild.members.fetch();
+          for (const [, gMember] of member.guild.members.cache) {
+            if (gMember.user.bot) continue;
+            if (gMember.roles.cache.has(cfg.adminRoleId) || gMember.permissions.has(PermissionFlagsBits.Administrator)) {
+              const dm = await gMember.user.createDM().catch(() => null);
+              if (dm) {
+                await dm.send({
+                  embeds: [boxEmbed({
+                    title: 'VERI. ANTI-RAID ALERT',
+                    description:
+                      `A raid has been detected in **${member.guild.name}**!\n\n` +
+                      `**${joins.length}** users joined in under **${cfg.antiRaidWindowSeconds} seconds**.\n\n` +
+                      'Verification has been locked. New members cannot verify until you unlock it.\n\n' +
+                      'Open **/admin-panel** in your server to manage the raid lock.',
+                    footer: 'Veri. Anti-Raid'
+                  })]
+                }).catch(() => {});
+              }
+            }
+          }
+        } catch {
+          // ignore DM failures
+        }
+      }
+    }
+    return cfg.raidLocked;
   }
   return false;
 }
@@ -719,24 +810,24 @@ async function checkTokenLogger(member, cfg) {
 async function buildAdminPanelEmbed(guild, cfg) {
   const { score, status } = await computeSecurityScore(guild);
 
-  const statusIcon = (val) => val ? '🟢' : '🔴';
+  const onOff = (val) => val ? 'ON' : 'OFF';
 
   const embed = panelEmbed({
     title: 'Veri. Admin Panel',
     description:
       `Welcome to the **Veri. Admin Panel** for **${guild.name}**.\n` +
       `Use the buttons and dropdowns below to manage Veri. settings.\n\n` +
-      `> **Security Score:** \`${score}/100\` — ${status}\n` +
-      `> **Server:** \`${guild.id}\``,
+      `> **Security Score:** \`${score}/100\` - ${status}\n` +
+      `> **Server:** \`${guild.id}\`${cfg.raidLocked ? '\n> **RAID LOCK ACTIVE** - Verification is locked. Click Unlock Raid to restore.' : ''}`,
     fields: [
       {
         name: 'Security Features',
         value:
-          `${statusIcon(cfg.captchaEnabled)} Captcha Verification\n` +
-          `${statusIcon(cfg.honeypotEnabled)} Honeypot Channel\n` +
-          `${statusIcon(cfg.antiVpnEnabled)} Anti-VPN / Anti-Proxy\n` +
-          `${statusIcon(cfg.antiTokenLoggerEnabled)} Anti-Token-Logger\n` +
-          `${statusIcon(cfg.antiMassDmEnabled)} Anti-Mass-DM`,
+          `Captcha Verification: ${onOff(cfg.captchaEnabled)}\n` +
+          `Honeypot Channel: ${onOff(cfg.honeypotEnabled)}\n` +
+          `Anti-Token-Logger: ${onOff(cfg.antiTokenLoggerEnabled)} (min age: ${cfg.antiTokenLoggerMinAge || 7} days)\n` +
+          `Join-Age Requirement: ${onOff(cfg.joinAgeEnabled)} (min: ${cfg.joinAgeMinDays || 7} days)\n` +
+          `Anti-Raid Cooldown: ${onOff(cfg.antiRaidEnabled)} (${cfg.antiRaidThreshold || 10} joins / ${cfg.antiRaidWindowSeconds || 30}s)`,
         inline: true
       },
       {
@@ -745,44 +836,53 @@ async function buildAdminPanelEmbed(guild, cfg) {
           `Honeypot Mode: \`${cfg.honeypotMode || 'global_ban'}\`\n` +
           `Verify Role: ${cfg.verificationRoleId ? `<@&${cfg.verificationRoleId}>` : '`Not set`'}\n` +
           `Admin Role: ${cfg.adminRoleId ? `<@&${cfg.adminRoleId}>` : '`Not set`'}\n` +
-          `Logs: ${cfg.logsChannelId ? `<#${cfg.logsChannelId}>` : '`Not set`'}`,
+          `Logs: ${cfg.logsChannelId ? `<#${cfg.logsChannelId}>` : '`Not set`'}\n` +
+          `Verify Cooldown: \`${cfg.verificationCooldownSeconds || 30}s\``,
         inline: true
       }
     ],
-    footer: `Veri. Admin Panel • ${guild.name}`
+    footer: `Veri. Admin Panel - ${guild.name}`
   });
 
   return embed;
 }
 
 function buildAdminPanelRows(cfg) {
-  const toggleBtn = (id, label, enabled) =>
-    new ButtonBuilder()
-      .setCustomId(id)
-      .setLabel(`${enabled ? '🟢' : '🔴'} ${label}`)
-      .setStyle(enabled ? ButtonStyle.Success : ButtonStyle.Secondary);
+  const onOff = (val) => val ? 'ON' : 'OFF';
 
+  // Row 1: Feature toggles
   const row1 = new ActionRowBuilder().addComponents(
-    toggleBtn('ap_toggle_captcha', 'Captcha', cfg.captchaEnabled),
-    toggleBtn('ap_toggle_honeypot', 'Honeypot', cfg.honeypotEnabled),
-    toggleBtn('ap_toggle_antivpn', 'Anti-VPN', cfg.antiVpnEnabled),
-    toggleBtn('ap_toggle_antitokenlogger', 'Anti-Token-Logger', cfg.antiTokenLoggerEnabled),
-    toggleBtn('ap_toggle_antimassdm', 'Anti-Mass-DM', cfg.antiMassDmEnabled)
+    new ButtonBuilder().setCustomId('ap_toggle_captcha').setLabel(`Captcha: ${onOff(cfg.captchaEnabled)}`).setStyle(cfg.captchaEnabled ? ButtonStyle.Success : ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('ap_toggle_honeypot').setLabel(`Honeypot: ${onOff(cfg.honeypotEnabled)}`).setStyle(cfg.honeypotEnabled ? ButtonStyle.Success : ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('ap_toggle_antitokenlogger').setLabel(`Token-Logger: ${onOff(cfg.antiTokenLoggerEnabled)}`).setStyle(cfg.antiTokenLoggerEnabled ? ButtonStyle.Success : ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('ap_toggle_joinage').setLabel(`Join-Age: ${onOff(cfg.joinAgeEnabled)}`).setStyle(cfg.joinAgeEnabled ? ButtonStyle.Success : ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('ap_toggle_antiraid').setLabel(`Anti-Raid: ${onOff(cfg.antiRaidEnabled)}`).setStyle(cfg.antiRaidEnabled ? ButtonStyle.Success : ButtonStyle.Secondary)
   );
 
+  // Row 2: Actions
   const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('ap_role_sync').setLabel('Role Sync').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('ap_server_backup').setLabel('Backup Server').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('ap_server_restore').setLabel('Restore Backup').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('ap_resend_verify').setLabel('Resend Verify Msg').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId('ap_resend_verify').setLabel('Resend Verify Msg').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('ap_resend_honeypot').setLabel('Resend Honeypot Msg').setStyle(ButtonStyle.Secondary)
   );
+
+  // Row 3: Config modals + raid unlock
+  const raidUnlockBtn = new ButtonBuilder()
+    .setCustomId('ap_unlock_raid')
+    .setLabel(cfg.raidLocked ? 'Unlock Raid Lock' : 'Raid Lock (inactive)')
+    .setStyle(cfg.raidLocked ? ButtonStyle.Danger : ButtonStyle.Secondary);
 
   const row3 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('ap_resend_honeypot').setLabel('Resend Honeypot Msg').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('ap_security_score').setLabel('Security Score').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('ap_digest_setup').setLabel('My Stats Digest').setStyle(ButtonStyle.Primary)
+    new ButtonBuilder().setCustomId('ap_digest_setup').setLabel('My Stats Digest').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('ap_set_roles').setLabel('Set Roles').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('ap_config_settings').setLabel('Configure Settings').setStyle(ButtonStyle.Primary),
+    raidUnlockBtn
   );
 
+  // Row 4: Honeypot mode dropdown
   const honeypotModeMenu = new StringSelectMenuBuilder()
     .setCustomId('ap_honeypot_mode')
     .setPlaceholder('Set Honeypot Mode...')
@@ -852,9 +952,7 @@ client.once('ready', async () => {
 
   console.log('Global verification repair complete.');
 
-  // Start digest checker
   setInterval(checkDigests, 10 * 60 * 1000);
-  // Run once on startup too
   setTimeout(checkDigests, 30000);
 });
 
@@ -941,10 +1039,43 @@ client.on('guildMemberAdd', async member => {
     return;
   }
 
+  // Join-Age Requirement check (runs before everything else except blacklist)
+  if (cfg.joinAgeEnabled) {
+    const blocked = await checkJoinAge(member, cfg);
+    if (blocked) return;
+  }
+
   // Anti-Token-Logger check
   if (cfg.antiTokenLoggerEnabled) {
     const flagged = await checkTokenLogger(member, cfg);
     if (flagged) return;
+  }
+
+  // Anti-Raid Cooldown check
+  if (cfg.antiRaidEnabled) {
+    const raidActive = await checkAntiRaid(member, cfg);
+    if (raidActive || cfg.raidLocked) {
+      // During raid lock, kick new joins and DM them
+      try {
+        const dm = await member.user.createDM().catch(() => null);
+        if (dm) {
+          await dm.send({
+            embeds: [boxEmbed({
+              title: 'Veri. - Server Locked',
+              description:
+                `**${guild.name}** is currently under a raid lock.\n\n` +
+                'Verification is temporarily disabled to protect the server.\n' +
+                'Please try joining again later once the lock has been lifted.',
+              footer: 'Veri. Anti-Raid'
+            })]
+          }).catch(() => {});
+        }
+        await member.kick('Veri. Anti-Raid: server is raid locked').catch(() => {});
+      } catch {
+        // ignore
+      }
+      return;
+    }
   }
 
   if (!cfg.captchaEnabled) {
@@ -1003,7 +1134,6 @@ client.on('interactionCreate', async interaction => {
     if (name === 'ping') {
       const wsPing = client.ws.ping;
       const start = Date.now();
-      // Measure API ping with a defer
       await interaction.deferReply();
       const apiPing = Date.now() - start;
 
@@ -1018,9 +1148,9 @@ client.on('interactionCreate', async interaction => {
 
       const pingBar = (ms) => {
         if (ms < 0) return '`N/A`';
-        if (ms < 100) return `\`${ms}ms\` 🟢`;
-        if (ms < 250) return `\`${ms}ms\``;
-        return `\`${ms}ms\` 🔴`;
+        if (ms < 100) return `\`${ms}ms\` (Good)`;
+        if (ms < 250) return `\`${ms}ms\` (OK)`;
+        return `\`${ms}ms\` (High)`;
       };
 
       const embed = panelEmbed({
@@ -1031,7 +1161,7 @@ client.on('interactionCreate', async interaction => {
           { name: 'API Ping', value: pingBar(apiPing), inline: true },
           { name: 'MongoDB Ping', value: pingBar(mongoPing), inline: true }
         ],
-        footer: 'Veri. — All Systems'
+        footer: 'Veri. - All Systems'
       });
 
       return interaction.editReply({ embeds: [embed] });
@@ -1056,7 +1186,7 @@ client.on('interactionCreate', async interaction => {
           { name: 'Heap Total', value: `\`${formatBytes(mem.heapTotal)}\``, inline: true },
           { name: 'CPU Load', value: `\`${cpuLoad}\``, inline: true }
         ],
-        footer: 'Veri. • Status'
+        footer: 'Veri. Status'
       });
 
       return interaction.reply({ embeds: [embed] });
@@ -1069,7 +1199,7 @@ client.on('interactionCreate', async interaction => {
       const embed = panelEmbed({
         title: 'Veri. Help Centre',
         description:
-          'Welcome to **Veri.** — the advanced Discord verification and security bot.\n\n' +
+          'Welcome to **Veri.** - the advanced Discord verification and security bot.\n\n' +
           'Use the dropdown below to browse commands by category, or click a button to get started.\n\n' +
           '> **Support Server:** [Join Here](https://discord.gg/K6x4qwZCNM)\n' +
           '> **Documentation:** Coming soon',
@@ -1077,38 +1207,37 @@ client.on('interactionCreate', async interaction => {
           {
             name: 'Open Commands (everyone)',
             value:
-              '`/ping` — Check bot latency\n' +
-              '`/uptime` — Bot uptime & system info\n' +
-              '`/help` — This menu\n' +
-              '`/player info` — Look up a user\'s Veri. record',
+              '`/ping` - Check bot latency\n' +
+              '`/uptime` - Bot uptime & system info\n' +
+              '`/help` - This menu\n' +
+              '`/player info` - Look up a user\'s Veri. record',
             inline: false
           },
           {
             name: 'Staff Commands (Veri. Admin / Admins)',
             value:
-              '`/setup` — Set up Veri. in your server\n' +
-              '`/settings` — Configure Veri. features\n' +
-              '`/admin-panel` — Full interactive admin panel\n' +
-              '`/role-sync` — Sync verified/staff roles\n' +
-              '`/server-backup` — Back up your server\n' +
-              '`/server-restore` — Restore from backup\n' +
-              '`/security_score` — View security score\n' +
-              '`/veri_resend` — Resend verify/honeypot messages',
+              '`/setup` - Set up Veri. in your server\n' +
+              '`/admin-panel` - Full interactive admin panel\n' +
+              '`/role-sync` - Sync verified/staff roles\n' +
+              '`/server-backup` - Back up your server\n' +
+              '`/server-restore` - Restore from backup\n' +
+              '`/security_score` - View security score\n' +
+              '`/veri_resend` - Resend verify/honeypot messages',
             inline: false
           },
           {
             name: 'Owner Only',
-            value: '`/veri_staff` — Veri. global staff control panel',
+            value: '`/veri_staff` - Veri. global staff control panel',
             inline: false
           },
           {
-            name: 'Security Features (toggle via /settings or admin panel)',
+            name: 'Security Features (toggle via admin panel)',
             value:
-              '`Captcha Verification` — DM-based image captcha\n' +
-              '`Honeypot Channel` — Catches bots/compromised accounts\n' +
-              '`Anti-VPN / Anti-Proxy` — Flags VPN/proxy users\n' +
-              '`Anti-Token-Logger` — Flags suspicious new accounts\n' +
-              '`Anti-Mass-DM` — Detects mass-DM behaviour',
+              '`Captcha Verification` - DM-based image captcha\n' +
+              '`Honeypot Channel` - Catches bots/compromised accounts\n' +
+              '`Anti-Token-Logger` - Flags suspicious new accounts\n' +
+              '`Join-Age Requirement` - Blocks accounts younger than X days\n' +
+              '`Anti-Raid Cooldown` - Detects and locks raids automatically',
             inline: false
           },
           {
@@ -1117,12 +1246,12 @@ client.on('interactionCreate', async interaction => {
               '1. Invite Veri. with **Administrator** permission\n' +
               '2. Make sure Veri.\'s role is **near the top** of your role list\n' +
               '3. Run `/setup`\n' +
-              '4. Customise with `/settings` or `/admin-panel`\n' +
+              '4. Customise with `/admin-panel`\n' +
               '5. Join our support server for help!',
             inline: false
           }
         ],
-        footer: 'Veri. Help • discord.gg/K6x4qwZCNM'
+        footer: 'Veri. Help - discord.gg/K6x4qwZCNM'
       });
 
       const row = new ActionRowBuilder().addComponents(
@@ -1204,6 +1333,7 @@ client.on('interactionCreate', async interaction => {
       await interaction.deferReply({ ephemeral: false });
 
       try {
+        // Create Veri. Admin role
         let adminRole = cfg.adminRoleId
           ? guild.roles.cache.get(cfg.adminRoleId)
           : guild.roles.cache.find(r => r.name === 'Veri. Admin');
@@ -1211,6 +1341,17 @@ client.on('interactionCreate', async interaction => {
         if (!adminRole) {
           adminRole = await guild.roles.create({ name: 'Veri. Admin', reason: 'Veri. setup: admin role' });
           cfg.adminRoleId = adminRole.id;
+          await saveGuildConfig(cfg);
+        }
+
+        // Create Captcha Verified role
+        let verifiedRole = cfg.verificationRoleId
+          ? guild.roles.cache.get(cfg.verificationRoleId)
+          : guild.roles.cache.find(r => r.name === 'Captcha Verified');
+
+        if (!verifiedRole) {
+          verifiedRole = await guild.roles.create({ name: 'Captcha Verified', reason: 'Veri. setup: verified role' });
+          cfg.verificationRoleId = verifiedRole.id;
           await saveGuildConfig(cfg);
         }
 
@@ -1258,153 +1399,29 @@ client.on('interactionCreate', async interaction => {
         await sendHoneypotMessage(honeypotChannel);
 
         await interaction.editReply({
-          embeds: [boxEmbed({ title: 'Veri.', description: 'Setup complete.\n\nAll Veri. channels have been created inside the "Veri." category.\nVerification, logs, and honeypot channels are configured.\nThe Verify button has been posted in the verification channel.\nA honeypot warning has been posted in the honeypot channel.\n\nThe "Veri. Admin" role has been created and stored.', footer: 'Veri.' })]
+          embeds: [boxEmbed({
+            title: 'Veri.',
+            description:
+              'Setup complete.\n\n' +
+              'All Veri. channels have been created inside the "Veri." category.\n' +
+              'Verification, logs, and honeypot channels are configured.\n' +
+              'The Verify button has been posted in the verification channel.\n' +
+              'A honeypot warning has been posted in the honeypot channel.\n\n' +
+              'Roles created:\n' +
+              `- "Veri. Admin" (admin role): <@&${adminRole.id}>\n` +
+              `- "Captcha Verified" (verified role): <@&${verifiedRole.id}>\n\n` +
+              'You can change these roles at any time via /admin-panel > Set Roles.',
+            footer: 'Veri.'
+          })]
         });
 
-        await sendLog(guild, 'Veri. Setup', 'Channels created/linked and Verify button posted by /setup.');
+        await sendLog(guild, 'Veri. Setup', 'Channels, roles created and Verify button posted by /setup.');
       } catch (e) {
         console.error('Veri. setup failed:', e);
         await interaction.editReply({
           embeds: [boxEmbed({ title: 'Veri.', description: `Setup failed partway through. This is usually caused by missing permissions or role hierarchy issues.\nCheck that Veri. has Manage Channels, Manage Roles, and a high enough role, then run /setup again.\n\nError: ${e.message}`, footer: 'Veri.' })]
         });
       }
-    }
-
-    // -----------------------------------------------------------------------
-    // /settings (improved visual)
-    // -----------------------------------------------------------------------
-    if (name === 'settings') {
-      if (!(await canUseVeriCommands(interaction))) {
-        return interaction.reply({
-          embeds: [boxEmbed({ title: 'Veri.', description: 'You are not allowed to run this command.\nOnly the server owner, Veri. Admin, Discord administrators, or official Veri. staff may run Veri. settings.', footer: 'Veri.' })],
-          ephemeral: true
-        });
-      }
-
-      const guild = interaction.guild;
-      const cfg = await getGuildConfig(guild.id);
-
-      const captchaEnabled = interaction.options.getBoolean('captcha_enabled');
-      const honeypotEnabled = interaction.options.getBoolean('honeypot_enabled');
-      const honeypotMode = interaction.options.getString('honeypot_mode');
-      const verificationRole = interaction.options.getRole('verification_role');
-      const antiVpn = interaction.options.getBoolean('anti_vpn');
-      const antiTokenLogger = interaction.options.getBoolean('anti_token_logger');
-      const antiMassDm = interaction.options.getBoolean('anti_mass_dm');
-
-      await interaction.deferReply({ ephemeral: false });
-
-      const changes = [];
-
-      if (typeof captchaEnabled === 'boolean') {
-        const wasEnabled = cfg.captchaEnabled;
-        cfg.captchaEnabled = captchaEnabled;
-
-        if (!captchaEnabled && wasEnabled) {
-          if (cfg.verificationChannelId) {
-            const ch = guild.channels.cache.get(cfg.verificationChannelId);
-            if (ch) await ch.delete('Veri. captcha disabled').catch(() => {});
-            cfg.verificationChannelId = null;
-          }
-          changes.push('Captcha **disabled**. Verification channel deleted.');
-        } else if (captchaEnabled && !wasEnabled) {
-          try {
-            const category = await getOrCreateVeriCategory(guild, cfg);
-            const verificationChannel = await guild.channels.create({ name: 'verification', type: ChannelType.GuildText, parent: category.id, reason: 'Veri. captcha re-enabled' });
-            cfg.verificationChannelId = verificationChannel.id;
-            await sendVerificationMessage(verificationChannel);
-            changes.push('Captcha **enabled**. Verification channel recreated.');
-          } catch (e) {
-            cfg.captchaEnabled = false;
-            changes.push(`Failed to recreate verification channel: ${e.message}`);
-          }
-        } else {
-          changes.push(`Captcha already **${captchaEnabled ? 'enabled' : 'disabled'}**. No changes needed.`);
-        }
-      }
-
-      if (typeof honeypotEnabled === 'boolean') {
-        const wasEnabled = cfg.honeypotEnabled;
-        cfg.honeypotEnabled = honeypotEnabled;
-
-        if (!honeypotEnabled && wasEnabled) {
-          if (cfg.honeypotChannelId) {
-            const ch = guild.channels.cache.get(cfg.honeypotChannelId);
-            if (ch) await ch.delete('Veri. honeypot disabled').catch(() => {});
-            cfg.honeypotChannelId = null;
-          }
-          changes.push('Honeypot **disabled**. Honeypot channel deleted.');
-        } else if (honeypotEnabled && !wasEnabled) {
-          try {
-            const category = await getOrCreateVeriCategory(guild, cfg);
-            const honeypotChannel = await guild.channels.create({ name: '!DO NOT TYPE HERE!', type: ChannelType.GuildText, parent: category.id, reason: 'Veri. honeypot re-enabled' });
-            cfg.honeypotChannelId = honeypotChannel.id;
-            await sendHoneypotMessage(honeypotChannel);
-            changes.push('Honeypot **enabled**. Honeypot channel recreated.');
-          } catch (e) {
-            cfg.honeypotEnabled = false;
-            changes.push(`Failed to recreate honeypot channel: ${e.message}`);
-          }
-        } else {
-          changes.push(`Honeypot already **${honeypotEnabled ? 'enabled' : 'disabled'}**. No changes needed.`);
-        }
-      }
-
-      if (honeypotMode) {
-        cfg.honeypotMode = honeypotMode;
-        changes.push(`Honeypot mode set to: **${honeypotMode}**`);
-      }
-      if (verificationRole) {
-        cfg.verificationRoleId = verificationRole.id;
-        changes.push(`Verification role set to: <@&${verificationRole.id}>`);
-      }
-      if (typeof antiVpn === 'boolean') {
-        cfg.antiVpnEnabled = antiVpn;
-        changes.push(`Anti-VPN/Proxy **${antiVpn ? 'enabled' : 'disabled'}**`);
-      }
-      if (typeof antiTokenLogger === 'boolean') {
-        cfg.antiTokenLoggerEnabled = antiTokenLogger;
-        changes.push(`Anti-Token-Logger **${antiTokenLogger ? 'enabled' : 'disabled'}**`);
-      }
-      if (typeof antiMassDm === 'boolean') {
-        cfg.antiMassDmEnabled = antiMassDm;
-        changes.push(`Anti-Mass-DM **${antiMassDm ? 'enabled' : 'disabled'}**`);
-      }
-
-      await saveGuildConfig(cfg);
-
-      const statusIcon = (val) => val ? '🟢 Enabled' : '🔴 Disabled';
-
-      const changesText = changes.length === 0 ? 'No changes were made.' : changes.map(c => `> ${c}`).join('\n');
-
-      const embed = panelEmbed({
-        title: 'Veri. Settings Updated',
-        description: `Settings have been updated for **${guild.name}**.\n\n**Changes:**\n${changesText}`,
-        fields: [
-          {
-            name: 'Security Features',
-            value:
-              `${statusIcon(cfg.captchaEnabled)} — Captcha\n` +
-              `${statusIcon(cfg.honeypotEnabled)} — Honeypot\n` +
-              `${statusIcon(cfg.antiVpnEnabled)} — Anti-VPN/Proxy\n` +
-              `${statusIcon(cfg.antiTokenLoggerEnabled)} — Anti-Token-Logger\n` +
-              `${statusIcon(cfg.antiMassDmEnabled)} — Anti-Mass-DM`,
-            inline: true
-          },
-          {
-            name: 'Current Config',
-            value:
-              `Honeypot Mode: \`${cfg.honeypotMode || 'global_ban'}\`\n` +
-              `Verify Role: ${cfg.verificationRoleId ? `<@&${cfg.verificationRoleId}>` : '`Auto-created`'}\n` +
-              `Logs: ${cfg.logsChannelId ? `<#${cfg.logsChannelId}>` : '`Not set`'}`,
-            inline: true
-          }
-        ],
-        footer: 'Veri. Settings'
-      });
-
-      await interaction.editReply({ embeds: [embed] });
-      await sendLog(guild, 'Veri. Settings Updated', 'An administrator updated Veri. settings using /settings.');
     }
 
     // -----------------------------------------------------------------------
@@ -1446,19 +1463,16 @@ client.on('interactionCreate', async interaction => {
 
       await guild.members.fetch();
 
-      // Get the verified role
       let verifiedRole = cfg.verificationRoleId ? guild.roles.cache.get(cfg.verificationRoleId) : null;
       if (!verifiedRole) {
         verifiedRole = guild.roles.cache.find(r => r.name === 'Captcha Verified');
       }
-      // Get admin role
       const adminRole = cfg.adminRoleId ? guild.roles.cache.get(cfg.adminRoleId) : null;
 
       for (const [, member] of guild.members.cache) {
         if (member.user.bot) continue;
         try {
           const record = await VerifiedUser.findOne({ userId: member.id });
-          // If they have a record showing verified in this server, make sure they have the role
           if (record?.firstVerified && record.servers.includes(guild.id) && verifiedRole) {
             if (!member.roles.cache.has(verifiedRole.id)) {
               await member.roles.add(verifiedRole, 'Veri. role-sync').catch(() => {});
@@ -1514,7 +1528,6 @@ client.on('interactionCreate', async interaction => {
           webhooks: []
         };
 
-        // Roles
         for (const [, role] of guild.roles.cache) {
           if (role.managed || role.id === guild.id) continue;
           backupData.roles.push({
@@ -1528,7 +1541,6 @@ client.on('interactionCreate', async interaction => {
           });
         }
 
-        // Categories
         for (const [, channel] of guild.channels.cache) {
           if (channel.type !== ChannelType.GuildCategory) continue;
           backupData.categories.push({
@@ -1544,7 +1556,6 @@ client.on('interactionCreate', async interaction => {
           });
         }
 
-        // Channels
         for (const [, channel] of guild.channels.cache) {
           if (channel.type === ChannelType.GuildCategory) continue;
           backupData.channels.push({
@@ -1564,7 +1575,6 @@ client.on('interactionCreate', async interaction => {
           });
         }
 
-        // Webhooks
         try {
           const webhooks = await guild.fetchWebhooks();
           for (const [, wh] of webhooks) {
@@ -1576,10 +1586,9 @@ client.on('interactionCreate', async interaction => {
             });
           }
         } catch {
-          // Insufficient perms for webhooks — skip
+          // Insufficient perms for webhooks
         }
 
-        // Save to DB
         const saved = await ServerBackup.create({
           guildId: guild.id,
           createdBy: interaction.user.id,
@@ -1597,7 +1606,7 @@ client.on('interactionCreate', async interaction => {
             { name: 'Webhooks', value: `\`${backupData.webhooks.length}\``, inline: true },
             { name: 'Created', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true }
           ],
-          footer: 'Veri. Backup • Save the Backup ID to restore later'
+          footer: 'Veri. Backup - Save the Backup ID to restore later'
         });
 
         await interaction.editReply({ embeds: [embed] });
@@ -1621,7 +1630,6 @@ client.on('interactionCreate', async interaction => {
         });
       }
 
-      // Show modal asking for backup ID
       const modal = new ModalBuilder()
         .setTitle('Veri. Server Restore')
         .setCustomId('restore_backup_modal');
@@ -1778,7 +1786,7 @@ client.on('interactionCreate', async interaction => {
     }
 
     // -----------------------------------------------------------------------
-    // /veri_staff (improved with system button)
+    // /veri_staff
     // -----------------------------------------------------------------------
     if (name === 'veri_staff') {
       if (interaction.user.id !== OWNER_ID) {
@@ -1794,11 +1802,11 @@ client.on('interactionCreate', async interaction => {
           '> **Owner-Only Panel**\n\n' +
           'All actions are logged and sent to your DMs.\n' +
           'Select an action from the buttons below.\n\n' +
-          'Use with caution — some actions are irreversible.',
+          'Use with caution - some actions are irreversible.',
         fields: [
           { name: 'Quick Stats', value: `Guilds: \`${client.guilds.cache.size}\` | Uptime: \`${formatUptime(Date.now() - BOT_START_TIME)}\``, inline: false }
         ],
-        footer: 'Veri. Staff Panel • Owner Only'
+        footer: 'Veri. Staff Panel - Owner Only'
       });
 
       const row1 = new ActionRowBuilder().addComponents(
@@ -1822,8 +1830,8 @@ client.on('interactionCreate', async interaction => {
       );
       const row4 = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('vs_restore_db').setLabel('Restore Database').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('vs_resend_verification').setLabel('Resend Verification Message').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('vs_resend_honeypot').setLabel('Resend Honeypot Message').setStyle(ButtonStyle.Primary)
+        new ButtonBuilder().setCustomId('vs_resend_verification').setLabel('Resend Verify Msg').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('vs_resend_honeypot').setLabel('Resend Honeypot Msg').setStyle(ButtonStyle.Primary)
       );
 
       await interaction.reply({ embeds: [panelEmbedMsg], components: [row1, row2, row3, row4], ephemeral: false });
@@ -1846,6 +1854,29 @@ client.on('interactionCreate', async interaction => {
       if (!cfg.captchaEnabled) {
         return interaction.reply({ embeds: [boxEmbed({ title: 'Veri.', description: 'Verification is currently disabled on this server.', footer: 'Veri.' })], ephemeral: true });
       }
+
+      if (cfg.raidLocked) {
+        return interaction.reply({ embeds: [boxEmbed({ title: 'Veri.', description: 'This server is currently under a raid lock. Verification is temporarily disabled.\nPlease try again later.', footer: 'Veri.' })], ephemeral: true });
+      }
+
+      // Verification cooldown check
+      const cooldownSeconds = cfg.verificationCooldownSeconds || 30;
+      const lastAttempt = verifyCooldowns.get(interaction.user.id + guild.id);
+      if (lastAttempt) {
+        const elapsed = (Date.now() - lastAttempt) / 1000;
+        if (elapsed < cooldownSeconds) {
+          const remaining = Math.ceil(cooldownSeconds - elapsed);
+          return interaction.reply({
+            embeds: [boxEmbed({
+              title: 'Veri.',
+              description: `Please wait **${remaining} more second(s)** before requesting verification again.`,
+              footer: 'Veri. Cooldown'
+            })],
+            ephemeral: true
+          });
+        }
+      }
+      verifyCooldowns.set(interaction.user.id + guild.id, Date.now());
 
       const dm = await interaction.user.createDM().catch(() => null);
       if (!dm) {
@@ -1880,11 +1911,11 @@ client.on('interactionCreate', async interaction => {
         title: 'Veri. Quick Start Guide',
         description:
           'Getting Veri. set up is simple. Follow these steps:\n\n' +
-          '**Step 1 — Invite Veri.**\nInvite Veri. to your server with **Administrator** permission.\n\n' +
-          '**Step 2 — Set role position**\nMake sure the **Veri.** role is near the **top** of your role list (above all other roles you want it to manage).\n\n' +
-          '**Step 3 — Run /setup**\nThis creates all channels, categories, and roles automatically.\n\n' +
-          '**Step 4 — Customise**\nUse `/settings` or `/admin-panel` to toggle security features, change the honeypot mode, and more.\n\n' +
-          '**Step 5 — Get help**\nJoin our support server at [discord.gg/K6x4qwZCNM](https://discord.gg/K6x4qwZCNM) for any issues.',
+          '**Step 1 - Invite Veri.**\nInvite Veri. to your server with **Administrator** permission.\n\n' +
+          '**Step 2 - Set role position**\nMake sure the **Veri.** role is near the **top** of your role list (above all other roles you want it to manage).\n\n' +
+          '**Step 3 - Run /setup**\nThis creates all channels, categories, and roles automatically.\n\n' +
+          '**Step 4 - Customise**\nUse `/admin-panel` to toggle security features, change the honeypot mode, set roles, and more.\n\n' +
+          '**Step 5 - Get help**\nJoin our support server at [discord.gg/K6x4qwZCNM](https://discord.gg/K6x4qwZCNM) for any issues.',
         footer: 'Veri. Quick Start'
       });
       return interaction.reply({ embeds: [embed], ephemeral: true });
@@ -1895,11 +1926,12 @@ client.on('interactionCreate', async interaction => {
         title: 'Veri. Security Features',
         description: 'A breakdown of all security features you can enable in Veri.',
         fields: [
-          { name: 'Captcha Verification', value: 'Sends new members a DM with an image captcha. They must answer correctly to gain access. Toggle with `/settings captcha_enabled`.', inline: false },
-          { name: 'Honeypot Channel', value: 'A trap channel visible to new members. Anyone who types in it is flagged as a bot or compromised account. Toggle with `/settings honeypot_enabled`.', inline: false },
-          { name: 'Anti-VPN / Anti-Proxy', value: 'Flags users joining via VPN or proxy and forces re-verification. Toggle with `/settings anti_vpn`.', inline: false },
-          { name: 'Anti-Token-Logger', value: 'Flags accounts with no avatar and very new account age — common signs of token-logger-compromised accounts. Toggle with `/settings anti_token_logger`.', inline: false },
-          { name: 'Anti-Mass-DM', value: 'Detects users sending DMs to many server members in a short window. Toggle with `/settings anti_mass_dm`.', inline: false }
+          { name: 'Captcha Verification', value: 'Sends new members a DM with an image captcha. They must answer correctly to gain access.', inline: false },
+          { name: 'Honeypot Channel', value: 'A trap channel visible to new members. Anyone who types in it is flagged as a bot or compromised account.', inline: false },
+          { name: 'Anti-Token-Logger', value: 'Flags accounts with no avatar and very new account age, or default username patterns. Suspicious accounts are kicked automatically.', inline: false },
+          { name: 'Join-Age Requirement', value: 'Blocks accounts younger than a set number of days from joining. They are DM\'d explaining why and told to rejoin when eligible.', inline: false },
+          { name: 'Anti-Raid Cooldown', value: 'Detects when too many users join too fast, locks verification, alerts all admins, and enables global ban on any honeypot triggers during the lock.', inline: false },
+          { name: 'Verification Cooldown', value: 'Prevents users from spamming the verify button. Cooldown duration is configurable per server via the admin panel.', inline: false }
         ],
         footer: 'Veri. Security Features'
       });
@@ -1915,70 +1947,159 @@ client.on('interactionCreate', async interaction => {
       }
 
       const guild = interaction.guild;
-      const cfg = await getGuildConfig(guild.id);
+      let cfg = await getGuildConfig(guild.id);
 
       // Toggle buttons
       if (id === 'ap_toggle_captcha') {
         cfg.captchaEnabled = !cfg.captchaEnabled;
-        await saveGuildConfig(cfg);
-        // If disabling, delete the verification channel
         if (!cfg.captchaEnabled && cfg.verificationChannelId) {
           const ch = guild.channels.cache.get(cfg.verificationChannelId);
           if (ch) await ch.delete('Veri. captcha disabled via admin panel').catch(() => {});
           cfg.verificationChannelId = null;
-          await saveGuildConfig(cfg);
         } else if (cfg.captchaEnabled && !cfg.verificationChannelId) {
           try {
             const category = await getOrCreateVeriCategory(guild, cfg);
             const verificationChannel = await guild.channels.create({ name: 'verification', type: ChannelType.GuildText, parent: category.id, reason: 'Veri. captcha re-enabled' });
             cfg.verificationChannelId = verificationChannel.id;
-            await saveGuildConfig(cfg);
             await sendVerificationMessage(verificationChannel);
           } catch {
-            // ignore channel creation errors
+            // ignore
           }
         }
+        await saveGuildConfig(cfg);
         await sendLog(guild, 'Veri. Admin Panel', `Captcha ${cfg.captchaEnabled ? 'enabled' : 'disabled'} by ${interaction.user.id}`);
+        cfg = await getGuildConfig(guild.id);
+        return interaction.update({ embeds: [await buildAdminPanelEmbed(guild, cfg)], components: buildAdminPanelRows(cfg) });
       }
 
       if (id === 'ap_toggle_honeypot') {
         cfg.honeypotEnabled = !cfg.honeypotEnabled;
-        await saveGuildConfig(cfg);
         if (!cfg.honeypotEnabled && cfg.honeypotChannelId) {
           const ch = guild.channels.cache.get(cfg.honeypotChannelId);
           if (ch) await ch.delete('Veri. honeypot disabled via admin panel').catch(() => {});
           cfg.honeypotChannelId = null;
-          await saveGuildConfig(cfg);
         } else if (cfg.honeypotEnabled && !cfg.honeypotChannelId) {
           try {
             const category = await getOrCreateVeriCategory(guild, cfg);
             const honeypotChannel = await guild.channels.create({ name: '!DO NOT TYPE HERE!', type: ChannelType.GuildText, parent: category.id, reason: 'Veri. honeypot re-enabled' });
             cfg.honeypotChannelId = honeypotChannel.id;
-            await saveGuildConfig(cfg);
             await sendHoneypotMessage(honeypotChannel);
           } catch {
             // ignore
           }
         }
-        await sendLog(guild, 'Veri. Admin Panel', `Honeypot ${cfg.honeypotEnabled ? 'enabled' : 'disabled'} by ${interaction.user.id}`);
-      }
-
-      if (id === 'ap_toggle_antivpn') {
-        cfg.antiVpnEnabled = !cfg.antiVpnEnabled;
         await saveGuildConfig(cfg);
-        await sendLog(guild, 'Veri. Admin Panel', `Anti-VPN ${cfg.antiVpnEnabled ? 'enabled' : 'disabled'} by ${interaction.user.id}`);
+        await sendLog(guild, 'Veri. Admin Panel', `Honeypot ${cfg.honeypotEnabled ? 'enabled' : 'disabled'} by ${interaction.user.id}`);
+        cfg = await getGuildConfig(guild.id);
+        return interaction.update({ embeds: [await buildAdminPanelEmbed(guild, cfg)], components: buildAdminPanelRows(cfg) });
       }
 
       if (id === 'ap_toggle_antitokenlogger') {
         cfg.antiTokenLoggerEnabled = !cfg.antiTokenLoggerEnabled;
         await saveGuildConfig(cfg);
         await sendLog(guild, 'Veri. Admin Panel', `Anti-Token-Logger ${cfg.antiTokenLoggerEnabled ? 'enabled' : 'disabled'} by ${interaction.user.id}`);
+        cfg = await getGuildConfig(guild.id);
+        return interaction.update({ embeds: [await buildAdminPanelEmbed(guild, cfg)], components: buildAdminPanelRows(cfg) });
       }
 
-      if (id === 'ap_toggle_antimassdm') {
-        cfg.antiMassDmEnabled = !cfg.antiMassDmEnabled;
+      if (id === 'ap_toggle_joinage') {
+        cfg.joinAgeEnabled = !cfg.joinAgeEnabled;
         await saveGuildConfig(cfg);
-        await sendLog(guild, 'Veri. Admin Panel', `Anti-Mass-DM ${cfg.antiMassDmEnabled ? 'enabled' : 'disabled'} by ${interaction.user.id}`);
+        await sendLog(guild, 'Veri. Admin Panel', `Join-Age Requirement ${cfg.joinAgeEnabled ? 'enabled' : 'disabled'} by ${interaction.user.id}`);
+        cfg = await getGuildConfig(guild.id);
+        return interaction.update({ embeds: [await buildAdminPanelEmbed(guild, cfg)], components: buildAdminPanelRows(cfg) });
+      }
+
+      if (id === 'ap_toggle_antiraid') {
+        cfg.antiRaidEnabled = !cfg.antiRaidEnabled;
+        await saveGuildConfig(cfg);
+        await sendLog(guild, 'Veri. Admin Panel', `Anti-Raid ${cfg.antiRaidEnabled ? 'enabled' : 'disabled'} by ${interaction.user.id}`);
+        cfg = await getGuildConfig(guild.id);
+        return interaction.update({ embeds: [await buildAdminPanelEmbed(guild, cfg)], components: buildAdminPanelRows(cfg) });
+      }
+
+      if (id === 'ap_unlock_raid') {
+        if (!cfg.raidLocked) {
+          return interaction.reply({ embeds: [boxEmbed({ title: 'Veri.', description: 'There is no active raid lock to unlock.', footer: 'Veri.' })], ephemeral: true });
+        }
+        cfg.raidLocked = false;
+        await saveGuildConfig(cfg);
+        raidJoinTracker.delete(guild.id);
+        await sendLog(guild, 'Veri. Raid Lock Lifted', `Raid lock manually lifted by ${interaction.user.id}. Verification is now open.`);
+        cfg = await getGuildConfig(guild.id);
+        return interaction.update({ embeds: [await buildAdminPanelEmbed(guild, cfg)], components: buildAdminPanelRows(cfg) });
+      }
+
+      if (id === 'ap_set_roles') {
+        const modal = new ModalBuilder().setTitle('Set Veri. Roles').setCustomId('ap_set_roles_modal');
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('verified_role_id')
+              .setLabel('Verified Role ID (leave blank to keep current)')
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setPlaceholder(cfg.verificationRoleId || 'Paste a Role ID')
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('admin_role_id')
+              .setLabel('Admin Role ID (leave blank to keep current)')
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setPlaceholder(cfg.adminRoleId || 'Paste a Role ID')
+          )
+        );
+        await interaction.showModal(modal);
+        return;
+      }
+
+      if (id === 'ap_config_settings') {
+        const modal = new ModalBuilder().setTitle('Configure Veri. Settings').setCustomId('ap_config_settings_modal');
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('verify_cooldown')
+              .setLabel('Verification cooldown (seconds, default 30)')
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setPlaceholder(`${cfg.verificationCooldownSeconds || 30}`)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('join_age_days')
+              .setLabel('Join-Age minimum days (default 7)')
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setPlaceholder(`${cfg.joinAgeMinDays || 7}`)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('token_logger_min_age')
+              .setLabel('Anti-Token-Logger minimum account age (days)')
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setPlaceholder(`${cfg.antiTokenLoggerMinAge || 7}`)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('raid_threshold')
+              .setLabel('Anti-Raid: joins to trigger (default 10)')
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setPlaceholder(`${cfg.antiRaidThreshold || 10}`)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('raid_window')
+              .setLabel('Anti-Raid: time window in seconds (default 30)')
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setPlaceholder(`${cfg.antiRaidWindowSeconds || 30}`)
+          )
+        );
+        await interaction.showModal(modal);
+        return;
       }
 
       if (id === 'ap_role_sync') {
@@ -2001,9 +2122,7 @@ client.on('interactionCreate', async interaction => {
         await interaction.editReply({ embeds: [boxEmbed({ title: 'Veri. Role Sync', description: `Role sync complete. ${synced} member(s) updated.`, footer: 'Veri.' })] });
         await sendLog(guild, 'Veri. Role Sync', `Role sync ran from admin panel by ${interaction.user.id}. ${synced} members synced.`);
         const updatedCfg = await getGuildConfig(guild.id);
-        const updatedEmbed = await buildAdminPanelEmbed(guild, updatedCfg);
-        const updatedRows = buildAdminPanelRows(updatedCfg);
-        await interaction.message.edit({ embeds: [updatedEmbed], components: updatedRows }).catch(() => {});
+        await interaction.message.edit({ embeds: [await buildAdminPanelEmbed(guild, updatedCfg)], components: buildAdminPanelRows(updatedCfg) }).catch(() => {});
         return;
       }
 
@@ -2040,9 +2159,7 @@ client.on('interactionCreate', async interaction => {
           await interaction.editReply({ embeds: [boxEmbed({ title: 'Veri.', description: `Backup failed: ${e.message}`, footer: 'Veri.' })] });
         }
         const updatedCfg = await getGuildConfig(guild.id);
-        const updatedEmbed = await buildAdminPanelEmbed(guild, updatedCfg);
-        const updatedRows = buildAdminPanelRows(updatedCfg);
-        await interaction.message.edit({ embeds: [updatedEmbed], components: updatedRows }).catch(() => {});
+        await interaction.message.edit({ embeds: [await buildAdminPanelEmbed(guild, updatedCfg)], components: buildAdminPanelRows(updatedCfg) }).catch(() => {});
         return;
       }
 
@@ -2066,9 +2183,7 @@ client.on('interactionCreate', async interaction => {
         await interaction.reply({ embeds: [boxEmbed({ title: 'Veri.', description: 'Verification message re-sent.', footer: 'Veri.' })], ephemeral: true });
         await sendLog(guild, 'Veri. Verification Message Re-Sent', `Re-sent via admin panel by ${interaction.user.id}`);
         const updatedCfg = await getGuildConfig(guild.id);
-        const updatedEmbed = await buildAdminPanelEmbed(guild, updatedCfg);
-        const updatedRows = buildAdminPanelRows(updatedCfg);
-        await interaction.message.edit({ embeds: [updatedEmbed], components: updatedRows }).catch(() => {});
+        await interaction.message.edit({ embeds: [await buildAdminPanelEmbed(guild, updatedCfg)], components: buildAdminPanelRows(updatedCfg) }).catch(() => {});
         return;
       }
 
@@ -2081,9 +2196,7 @@ client.on('interactionCreate', async interaction => {
         await interaction.reply({ embeds: [boxEmbed({ title: 'Veri.', description: 'Honeypot message re-sent.', footer: 'Veri.' })], ephemeral: true });
         await sendLog(guild, 'Veri. Honeypot Message Re-Sent', `Re-sent via admin panel by ${interaction.user.id}`);
         const updatedCfg = await getGuildConfig(guild.id);
-        const updatedEmbed = await buildAdminPanelEmbed(guild, updatedCfg);
-        const updatedRows = buildAdminPanelRows(updatedCfg);
-        await interaction.message.edit({ embeds: [updatedEmbed], components: updatedRows }).catch(() => {});
+        await interaction.message.edit({ embeds: [await buildAdminPanelEmbed(guild, updatedCfg)], components: buildAdminPanelRows(updatedCfg) }).catch(() => {});
         return;
       }
 
@@ -2119,14 +2232,6 @@ client.on('interactionCreate', async interaction => {
         );
         await interaction.showModal(modal);
         return;
-      }
-
-      // Refresh the panel after any toggle
-      if (['ap_toggle_captcha', 'ap_toggle_honeypot', 'ap_toggle_antivpn', 'ap_toggle_antitokenlogger', 'ap_toggle_antimassdm'].includes(id)) {
-        const updatedCfg = await getGuildConfig(guild.id);
-        const updatedEmbed = await buildAdminPanelEmbed(guild, updatedCfg);
-        const updatedRows = buildAdminPanelRows(updatedCfg);
-        return interaction.update({ embeds: [updatedEmbed], components: updatedRows });
       }
     }
 
@@ -2392,7 +2497,6 @@ client.on('interactionCreate', async interaction => {
   if (interaction.isStringSelectMenu()) {
     const id = interaction.customId;
 
-    // Admin panel honeypot mode dropdown
     if (id === 'ap_honeypot_mode') {
       if (!(await canUseVeriCommands(interaction))) {
         return interaction.reply({ embeds: [boxEmbed({ title: 'Veri.', description: 'You do not have permission.', footer: 'Veri.' })], ephemeral: true });
@@ -2402,12 +2506,10 @@ client.on('interactionCreate', async interaction => {
       cfg.honeypotMode = interaction.values[0];
       await saveGuildConfig(cfg);
       await sendLog(guild, 'Veri. Admin Panel', `Honeypot mode set to ${cfg.honeypotMode} by ${interaction.user.id}`);
-      const updatedEmbed = await buildAdminPanelEmbed(guild, cfg);
-      const updatedRows = buildAdminPanelRows(cfg);
-      return interaction.update({ embeds: [updatedEmbed], components: updatedRows });
+      const updatedCfg = await getGuildConfig(guild.id);
+      return interaction.update({ embeds: [await buildAdminPanelEmbed(guild, updatedCfg)], components: buildAdminPanelRows(updatedCfg) });
     }
 
-    // Help category dropdown
     if (id === 'help_category') {
       const val = interaction.values[0];
       let embed;
@@ -2416,65 +2518,66 @@ client.on('interactionCreate', async interaction => {
         embed = panelEmbed({
           title: 'Open Commands',
           description:
-            '`/ping` — Shows WebSocket ping, API ping, and MongoDB ping\n' +
-            '`/uptime` — Shows how long Veri. has been online, last restart, memory usage, CPU usage\n' +
-            '`/help` — This interactive help menu\n' +
-            '`/player info <user_id>` — Look up any user\'s Veri. verification record',
-          footer: 'Veri. Help • Open Commands'
+            '`/ping` - Shows WebSocket ping, API ping, and MongoDB ping\n' +
+            '`/uptime` - Shows how long Veri. has been online, last restart, memory usage, CPU usage\n' +
+            '`/help` - This interactive help menu\n' +
+            '`/player info <user_id>` - Look up any user\'s Veri. verification record',
+          footer: 'Veri. Help - Open Commands'
         });
       } else if (val === 'staff') {
         embed = panelEmbed({
           title: 'Staff Commands',
           description:
             'These commands require the **Veri. Admin** role, **Administrator** permission, or server ownership.\n\n' +
-            '`/setup` — Initial bot setup. Creates all channels, roles, and categories automatically.\n' +
-            '`/settings` — Toggle all features (captcha, honeypot, anti-vpn, anti-token-logger, anti-mass-dm), change roles, and more.\n' +
-            '`/admin-panel` — Full interactive panel with toggle buttons, dropdowns for honeypot mode, role sync, backup/restore, and personal stats digest setup.\n' +
-            '`/role-sync` — Syncs the verified role to all users who have a verified record in this server.\n' +
-            '`/server-backup` — Saves a snapshot of roles, channels, categories, permissions, and webhooks to the database.\n' +
-            '`/server-restore` — Restores a previously saved backup using the Backup ID.\n' +
-            '`/security_score` — Shows this server\'s current Veri. security score.\n' +
-            '`/veri_resend verification|honeypot` — Re-sends the relevant message to its channel.',
-          footer: 'Veri. Help • Staff Commands'
+            '`/setup` - Initial bot setup. Creates all channels, roles, and categories automatically.\n' +
+            '`/admin-panel` - Full interactive panel with toggle buttons, dropdowns for honeypot mode, role sync, backup/restore, and personal stats digest setup.\n' +
+            '`/role-sync` - Syncs the verified role to all users who have a verified record in this server.\n' +
+            '`/server-backup` - Saves a snapshot of roles, channels, categories, permissions, and webhooks to the database.\n' +
+            '`/server-restore` - Restores a previously saved backup using the Backup ID.\n' +
+            '`/security_score` - Shows this server\'s current Veri. security score.\n' +
+            '`/veri_resend verification|honeypot` - Re-sends the relevant message to its channel.',
+          footer: 'Veri. Help - Staff Commands'
         });
       } else if (val === 'security') {
         embed = panelEmbed({
           title: 'Security Features',
-          description: 'Toggle any of these features with `/settings` or the `/admin-panel`.',
+          description: 'Toggle any of these features via the `/admin-panel`.',
           fields: [
             { name: 'Captcha Verification', value: 'Sends new members a DM with an image captcha. They must answer correctly to gain access.', inline: false },
             { name: 'Honeypot Channel', value: 'A hidden trap channel. Anyone typing in it gets caught and punished per your honeypot mode setting.', inline: false },
-            { name: 'Anti-VPN / Anti-Proxy', value: 'Flags users joining from known VPN or proxy IP ranges and forces reverification.', inline: false },
-            { name: 'Anti-Token-Logger', value: 'Automatically kicks accounts that appear suspicious: no avatar and account age under 7 days.', inline: false },
-            { name: 'Anti-Mass-DM', value: 'Detects users sending DMs to many members rapidly (50+ DMs in 10 minutes) and punishes them.', inline: false }
+            { name: 'Anti-Token-Logger', value: 'Automatically kicks accounts with no avatar and suspicious age or username pattern.', inline: false },
+            { name: 'Join-Age Requirement', value: 'Blocks accounts under a minimum age. The user is DM\'d explaining why and when they can rejoin.', inline: false },
+            { name: 'Anti-Raid Cooldown', value: 'Detects rapid joins, locks verification, alerts admins via DM, and enables global ban mode for any honeypot triggers during the lock.', inline: false },
+            { name: 'Verification Cooldown', value: 'Prevents spamming the Verify button. Configurable duration per server.', inline: false }
           ],
-          footer: 'Veri. Help • Security Features'
+          footer: 'Veri. Help - Security Features'
         });
       } else if (val === 'quickstart') {
         embed = panelEmbed({
           title: 'Quick Start',
           description:
-            '**Step 1** — Invite Veri. with **Administrator** permission.\n\n' +
-            '**Step 2** — Move the **Veri.** role to near the **top** of your role list.\n\n' +
-            '**Step 3** — Run `/setup` in your server. This creates:\n' +
-            '• A **Veri.** category\n' +
-            '• A **#verification** channel with the Verify button\n' +
-            '• A **#veri-logs** channel\n' +
-            '• A **#!DO NOT TYPE HERE!** honeypot channel\n' +
-            '• A **Veri. Admin** role\n\n' +
-            '**Step 4** — Customise with `/settings` or `/admin-panel`.\n\n' +
-            '**Step 5** — Need help? Join [discord.gg/K6x4qwZCNM](https://discord.gg/K6x4qwZCNM)',
-          footer: 'Veri. Help • Quick Start'
+            '**Step 1** - Invite Veri. with **Administrator** permission.\n\n' +
+            '**Step 2** - Move the **Veri.** role to near the **top** of your role list.\n\n' +
+            '**Step 3** - Run `/setup` in your server. This creates:\n' +
+            '- A **Veri.** category\n' +
+            '- A **#verification** channel with the Verify button\n' +
+            '- A **#veri-logs** channel\n' +
+            '- A **#!DO NOT TYPE HERE!** honeypot channel\n' +
+            '- A **Veri. Admin** role\n' +
+            '- A **Captcha Verified** role\n\n' +
+            '**Step 4** - Customise with `/admin-panel`.\n\n' +
+            '**Step 5** - Need help? Join [discord.gg/K6x4qwZCNM](https://discord.gg/K6x4qwZCNM)',
+          footer: 'Veri. Help - Quick Start'
         });
       } else if (val === 'stats') {
         embed = panelEmbed({
           title: 'Stats & Monitoring',
           description:
-            '**`/ping`** — Real-time latency for WebSocket, API, and MongoDB.\n\n' +
-            '**`/uptime`** — Bot uptime, last restart time, RSS memory, heap memory, and CPU load.\n\n' +
-            '**`/security_score`** — A 0-100 score based on which features are active, channels present, roles set, etc.\n\n' +
-            '**Personal Stats Digest** — Available via `/admin-panel` → My Stats Digest.\nEach staff member can opt in to receive a daily, weekly, or monthly summary of server stats to their DMs. You can cancel at any time, and it automatically stops if you lose access.',
-          footer: 'Veri. Help • Stats & Monitoring'
+            '**`/ping`** - Real-time latency for WebSocket, API, and MongoDB.\n\n' +
+            '**`/uptime`** - Bot uptime, last restart time, RSS memory, heap memory, and CPU load.\n\n' +
+            '**`/security_score`** - A 0-100 score based on which features are active, channels present, roles set, etc.\n\n' +
+            '**Personal Stats Digest** - Available via `/admin-panel` > My Stats Digest.\nEach staff member can opt in to receive a daily, weekly, or monthly summary of server stats to their DMs.',
+          footer: 'Veri. Help - Stats & Monitoring'
         });
       } else {
         return interaction.reply({ embeds: [boxEmbed({ title: 'Veri.', description: 'Unknown category.', footer: 'Veri.' })], ephemeral: true });
@@ -2490,7 +2593,116 @@ client.on('interactionCreate', async interaction => {
   if (interaction.isModalSubmit()) {
     const id = interaction.customId;
 
-    // Restore backup modal (can be called from /server-restore or admin panel)
+    // Set Roles modal
+    if (id === 'ap_set_roles_modal') {
+      if (!(await canUseVeriCommands(interaction))) {
+        return interaction.reply({ embeds: [boxEmbed({ title: 'Veri.', description: 'You do not have permission.', footer: 'Veri.' })], ephemeral: true });
+      }
+
+      const guild = interaction.guild;
+      const cfg = await getGuildConfig(guild.id);
+      const verifiedRoleInput = interaction.fields.getTextInputValue('verified_role_id').trim();
+      const adminRoleInput = interaction.fields.getTextInputValue('admin_role_id').trim();
+      const changes = [];
+
+      if (verifiedRoleInput) {
+        const role = guild.roles.cache.get(verifiedRoleInput);
+        if (!role) {
+          return interaction.reply({ embeds: [boxEmbed({ title: 'Veri.', description: `No role found with ID \`${verifiedRoleInput}\`. Make sure you paste the Role ID, not the role name.`, footer: 'Veri.' })], ephemeral: true });
+        }
+        cfg.verificationRoleId = verifiedRoleInput;
+        changes.push(`Verified role set to <@&${verifiedRoleInput}>`);
+      }
+
+      if (adminRoleInput) {
+        const role = guild.roles.cache.get(adminRoleInput);
+        if (!role) {
+          return interaction.reply({ embeds: [boxEmbed({ title: 'Veri.', description: `No role found with ID \`${adminRoleInput}\`. Make sure you paste the Role ID, not the role name.`, footer: 'Veri.' })], ephemeral: true });
+        }
+        cfg.adminRoleId = adminRoleInput;
+        changes.push(`Admin role set to <@&${adminRoleInput}>`);
+      }
+
+      await saveGuildConfig(cfg);
+      await sendLog(guild, 'Veri. Roles Updated', `Roles updated by ${interaction.user.id}: ${changes.join(', ') || 'No changes.'}`);
+
+      const updatedCfg = await getGuildConfig(guild.id);
+      await interaction.reply({
+        embeds: [boxEmbed({
+          title: 'Veri. Roles Updated',
+          description: changes.length > 0 ? changes.join('\n') : 'No changes were made (both fields were left blank).',
+          footer: 'Veri.'
+        })],
+        ephemeral: true
+      });
+      await interaction.message.edit({ embeds: [await buildAdminPanelEmbed(guild, updatedCfg)], components: buildAdminPanelRows(updatedCfg) }).catch(() => {});
+      return;
+    }
+
+    // Configure Settings modal
+    if (id === 'ap_config_settings_modal') {
+      if (!(await canUseVeriCommands(interaction))) {
+        return interaction.reply({ embeds: [boxEmbed({ title: 'Veri.', description: 'You do not have permission.', footer: 'Veri.' })], ephemeral: true });
+      }
+
+      const guild = interaction.guild;
+      const cfg = await getGuildConfig(guild.id);
+      const changes = [];
+
+      const parsePosInt = (val, fallback) => {
+        const n = parseInt(val, 10);
+        return (!isNaN(n) && n > 0) ? n : fallback;
+      };
+
+      const cooldownInput = interaction.fields.getTextInputValue('verify_cooldown').trim();
+      const joinAgeDaysInput = interaction.fields.getTextInputValue('join_age_days').trim();
+      const tokenLoggerAgeInput = interaction.fields.getTextInputValue('token_logger_min_age').trim();
+      const raidThresholdInput = interaction.fields.getTextInputValue('raid_threshold').trim();
+      const raidWindowInput = interaction.fields.getTextInputValue('raid_window').trim();
+
+      if (cooldownInput) {
+        const val = parsePosInt(cooldownInput, cfg.verificationCooldownSeconds || 30);
+        cfg.verificationCooldownSeconds = val;
+        changes.push(`Verification cooldown: ${val}s`);
+      }
+      if (joinAgeDaysInput) {
+        const val = parsePosInt(joinAgeDaysInput, cfg.joinAgeMinDays || 7);
+        cfg.joinAgeMinDays = val;
+        changes.push(`Join-Age minimum: ${val} days`);
+      }
+      if (tokenLoggerAgeInput) {
+        const val = parsePosInt(tokenLoggerAgeInput, cfg.antiTokenLoggerMinAge || 7);
+        cfg.antiTokenLoggerMinAge = val;
+        changes.push(`Anti-Token-Logger minimum age: ${val} days`);
+      }
+      if (raidThresholdInput) {
+        const val = parsePosInt(raidThresholdInput, cfg.antiRaidThreshold || 10);
+        cfg.antiRaidThreshold = val;
+        changes.push(`Anti-Raid threshold: ${val} joins`);
+      }
+      if (raidWindowInput) {
+        const val = parsePosInt(raidWindowInput, cfg.antiRaidWindowSeconds || 30);
+        cfg.antiRaidWindowSeconds = val;
+        changes.push(`Anti-Raid window: ${val}s`);
+      }
+
+      await saveGuildConfig(cfg);
+      await sendLog(guild, 'Veri. Settings Updated', `Settings updated by ${interaction.user.id}: ${changes.join(', ') || 'No changes.'}`);
+
+      const updatedCfg = await getGuildConfig(guild.id);
+      await interaction.reply({
+        embeds: [boxEmbed({
+          title: 'Veri. Settings Updated',
+          description: changes.length > 0 ? changes.join('\n') : 'No changes were made.',
+          footer: 'Veri.'
+        })],
+        ephemeral: true
+      });
+      await interaction.message.edit({ embeds: [await buildAdminPanelEmbed(guild, updatedCfg)], components: buildAdminPanelRows(updatedCfg) }).catch(() => {});
+      return;
+    }
+
+    // Restore backup modal
     if (id === 'restore_backup_modal') {
       if (!(await canUseVeriCommands(interaction))) {
         return interaction.reply({ embeds: [boxEmbed({ title: 'Veri.', description: 'You do not have permission.', footer: 'Veri.' })], ephemeral: true });
@@ -2511,9 +2723,8 @@ client.on('interactionCreate', async interaction => {
         }
 
         const data = backup.data;
-        let restored = { roles: 0, channels: 0, categories: 0 };
+        const restored = { roles: 0, channels: 0, categories: 0 };
 
-        // Restore roles (only those that no longer exist by name)
         for (const roleData of (data.roles || [])) {
           const existing = guild.roles.cache.find(r => r.name === roleData.name);
           if (!existing) {
@@ -2530,7 +2741,6 @@ client.on('interactionCreate', async interaction => {
           }
         }
 
-        // Restore categories (only those that no longer exist by name)
         const categoryMap = new Map();
         for (const catData of (data.categories || [])) {
           const existing = guild.channels.cache.find(c => c.name === catData.name && c.type === ChannelType.GuildCategory);
@@ -2545,7 +2755,6 @@ client.on('interactionCreate', async interaction => {
           }
         }
 
-        // Restore channels (only those that no longer exist by name)
         for (const chData of (data.channels || [])) {
           const existing = guild.channels.cache.find(c => c.name === chData.name);
           if (!existing) {
@@ -2568,7 +2777,7 @@ client.on('interactionCreate', async interaction => {
             { name: 'Categories Restored', value: `\`${restored.categories}\``, inline: true },
             { name: 'Channels Restored', value: `\`${restored.channels}\``, inline: true }
           ],
-          footer: 'Veri. Restore • Only missing items were recreated'
+          footer: 'Veri. Restore - Only missing items were recreated'
         });
 
         await interaction.editReply({ embeds: [embed] });
@@ -2602,7 +2811,7 @@ client.on('interactionCreate', async interaction => {
       return interaction.reply({
         embeds: [panelEmbed({
           title: 'Stats Digest Enabled',
-          description: `You will now receive a **${raw}** stats digest for **${guild.name}** in your DMs.\n\nYour first digest will arrive within the next digest check cycle.\n\nTo cancel, run \`/admin-panel\` → My Stats Digest and type \`cancel\`.`,
+          description: `You will now receive a **${raw}** stats digest for **${guild.name}** in your DMs.\n\nYour first digest will arrive within the next digest check cycle.\n\nTo cancel, run \`/admin-panel\` > My Stats Digest and type \`cancel\`.`,
           footer: 'Veri. Stats Digest'
         })],
         ephemeral: true
@@ -2678,12 +2887,12 @@ client.on('interactionCreate', async interaction => {
           `Heap Used: ${formatBytes(mem.heapUsed)} / ${formatBytes(mem.heapTotal)}`,
           `Shard: ${client.shard ? `${client.shard.ids.join(',')}` : 'None (no sharding)'}`,
           '',
-          ' Database Stats',
+          'Database Stats',
           `Guilds tracked: ${totalGuilds}`,
           `Verified users: ${totalUsers}`,
           `Global blacklist: ${blacklistSize}`,
           '',
-          ' Selected Guild',
+          'Selected Guild',
           `ID: ${targetGuild.id}`, `Name: ${targetGuild.name}`,
           `Category: ${cfg.categoryId || 'None'}`,
           `Verification channel: ${cfg.verificationChannelId || 'None'}`,
@@ -2693,9 +2902,11 @@ client.on('interactionCreate', async interaction => {
           `Admin role: ${cfg.adminRoleId || 'None'}`,
           `Captcha: ${cfg.captchaEnabled ? 'Yes' : 'No'}`,
           `Honeypot: ${cfg.honeypotEnabled ? 'Yes' : 'No'}`,
-          `Anti-VPN: ${cfg.antiVpnEnabled ? 'Yes' : 'No'}`,
           `Anti-Token-Logger: ${cfg.antiTokenLoggerEnabled ? 'Yes' : 'No'}`,
-          `Anti-Mass-DM: ${cfg.antiMassDmEnabled ? 'Yes' : 'No'}`
+          `Join-Age: ${cfg.joinAgeEnabled ? 'Yes' : 'No'} (min ${cfg.joinAgeMinDays || 7} days)`,
+          `Anti-Raid: ${cfg.antiRaidEnabled ? 'Yes' : 'No'}`,
+          `Raid Locked: ${cfg.raidLocked ? 'Yes' : 'No'}`,
+          `Verify Cooldown: ${cfg.verificationCooldownSeconds || 30}s`
         ];
         await dm.send({ embeds: [boxEmbed({ title: 'Veri. Staff - System Tools', description: lines.join('\n'), footer: 'Veri.' })] });
         return interaction.reply({ embeds: [boxEmbed({ title: 'Veri.', description: 'System tools summary sent to your DMs.', footer: 'Veri.' })], ephemeral: false });
@@ -2800,12 +3011,15 @@ client.on('interactionCreate', async interaction => {
         ];
         if (guild) {
           const cfg = await getGuildConfig(guild.id);
-          lines.push('', 'Current Guild', `ID: ${guild.id}`, `Name: ${guild.name}`,
+          lines.push(
+            '', 'Current Guild',
+            `ID: ${guild.id}`, `Name: ${guild.name}`,
             `Captcha: ${cfg.captchaEnabled ? 'Yes' : 'No'}`,
             `Honeypot: ${cfg.honeypotEnabled ? 'Yes' : 'No'}`,
-            `Anti-VPN: ${cfg.antiVpnEnabled ? 'Yes' : 'No'}`,
             `Anti-Token-Logger: ${cfg.antiTokenLoggerEnabled ? 'Yes' : 'No'}`,
-            `Anti-Mass-DM: ${cfg.antiMassDmEnabled ? 'Yes' : 'No'}`
+            `Join-Age: ${cfg.joinAgeEnabled ? 'Yes' : 'No'}`,
+            `Anti-Raid: ${cfg.antiRaidEnabled ? 'Yes' : 'No'}`,
+            `Raid Locked: ${cfg.raidLocked ? 'Yes' : 'No'}`
           );
         }
         await dm.send({ embeds: [boxEmbed({ title: 'Veri. Staff - System Tools', description: lines.join('\n'), footer: 'Veri.' })] });
@@ -2924,8 +3138,11 @@ client.on('messageCreate', async message => {
         if (dm) {
           await dm.send({
             embeds: [boxEmbed({
-              title: 'Veri. — Honeypot Warning',
-              description: `Hey! You just typed in the honeypot channel in **${guild.name}**.\n\nAs server owner, you are exempt from punishment — but please be aware: **this channel is a trap for bots and malicious users.** If you type in it on another server, you will be punished.\n\nIf you meant to delete this channel, use Discord's channel settings.`,
+              title: 'Veri. - Honeypot Warning',
+              description:
+                `Hey! You just typed in the honeypot channel in **${guild.name}**.\n\n` +
+                'As server owner, you are exempt from punishment - but please be aware: **this channel is a trap for bots and malicious users.**\n\n' +
+                'If you meant to delete this channel, use Discord\'s channel settings.',
               footer: 'Veri. Honeypot'
             })]
           }).catch(() => {});
@@ -2944,8 +3161,6 @@ client.on('messageCreate', async message => {
     );
 
     await sendLog(guild, 'Veri. Honeypot Triggered', `User ${message.author.id} sent a message in the honeypot channel.`);
-
-    // Delete their message
     await message.delete().catch(() => {});
 
     const dm = await message.author.createDM().catch(() => null);
@@ -2953,14 +3168,18 @@ client.on('messageCreate', async message => {
       await dm.send({
         embeds: [boxEmbed({
           title: 'Veri.',
-          description: 'You typed in a Veri. honeypot channel.\nThis channel exists solely to catch spam bots and malicious users.\n\nIf this was accidental, visit our website and email Veri. staff for assistance.',
+          description:
+            'You typed in a Veri. honeypot channel.\n' +
+            'This channel exists solely to catch spam bots and malicious users.\n\n' +
+            'If this was accidental, visit our website and email Veri. staff for assistance.',
           footer: 'Veri.'
         })]
       }).catch(() => {});
     }
 
     const member = await guild.members.fetch(message.author.id).catch(() => null);
-    const mode = cfg.honeypotMode || 'global_ban';
+    // If server is raid locked, always global ban any honeypot triggers
+    const mode = cfg.raidLocked ? 'global_ban' : (cfg.honeypotMode || 'global_ban');
 
     if (mode === 'global_ban') {
       await addToBlacklist(message.author.id);
@@ -2970,44 +3189,9 @@ client.on('messageCreate', async message => {
     } else if (mode === 'kick') {
       if (member) await member.kick('Veri. honeypot trigger (kick)').catch(() => {});
     }
+    // warn and dm_only modes: DM already sent above, no further action
 
     return;
-  }
-
-  // Anti-Mass-DM detection via message content scanning
-  // We track members who message many *different* users in DMs quickly.
-  // Since we can't intercept other DMs, we flag users who send @mention spam to many people quickly in guild.
-  if (cfg.antiMassDmEnabled) {
-    // Track messages per user in a rolling 10-minute window
-    const now = Date.now();
-    const windowMs = 10 * 60 * 1000; // 10 minutes
-    const threshold = 50; // messages in window
-
-    const tracked = dmCountTracker.get(message.author.id) || { count: 0, windowStart: now };
-    if (now - tracked.windowStart > windowMs) {
-      tracked.count = 1;
-      tracked.windowStart = now;
-    } else {
-      tracked.count++;
-    }
-    dmCountTracker.set(message.author.id, tracked);
-
-    if (tracked.count >= threshold) {
-      dmCountTracker.delete(message.author.id);
-      await sendLog(guild, 'Veri. Anti-Mass-DM Triggered', `User ${message.author.id} sent ${threshold}+ messages in 10 minutes. Flagged for mass-DM activity.`);
-      const member = await guild.members.fetch(message.author.id).catch(() => null);
-      const dmUser = await message.author.createDM().catch(() => null);
-      if (dmUser) {
-        await dmUser.send({
-          embeds: [boxEmbed({
-            title: 'Veri. Anti-Mass-DM',
-            description: 'You have been flagged by Veri. Anti-Mass-DM protection for sending an unusually high number of messages.\n\nYou have been kicked from the server. If this was a mistake, please contact a server administrator.',
-            footer: 'Veri. Anti-Mass-DM'
-          })]
-        }).catch(() => {});
-      }
-      if (member) await member.kick('Veri. Anti-Mass-DM: excessive message volume').catch(() => {});
-    }
   }
 });
 
