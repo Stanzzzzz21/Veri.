@@ -878,7 +878,7 @@ function buildAdminPanelRows(cfg) {
     new ButtonBuilder().setCustomId('ap_security_score').setLabel('Security Score').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('ap_digest_setup').setLabel('My Stats Digest').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('ap_set_roles').setLabel('Set Roles').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('ap_config_settings').setLabel('Configure Settings').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('ap_config_settings').setLabel('Settings').setStyle(ButtonStyle.Primary),
     raidUnlockBtn
   );
 
@@ -2036,15 +2036,16 @@ client.on('interactionCreate', async interaction => {
           new ActionRowBuilder().addComponents(
             new TextInputBuilder()
               .setCustomId('verified_role_id')
-              .setLabel('Verified Role ID (leave blank to keep current)')
+              .setLabel("Verified Role ID")
+                .setPlaceholder("Leave blank to keep current")
               .setStyle(TextInputStyle.Short)
               .setRequired(false)
               .setPlaceholder(cfg.verificationRoleId || 'Paste a Role ID')
           ),
           new ActionRowBuilder().addComponents(
             new TextInputBuilder()
-              .setCustomId('admin_role_id')
-              .setLabel('Admin Role ID (leave blank to keep current)')
+              .setLabel('Admin Role ID')
+               .setPlaceholder(cfg.adminRoleId || 'Leave blank to keep current')
               .setStyle(TextInputStyle.Short)
               .setRequired(false)
               .setPlaceholder(cfg.adminRoleId || 'Paste a Role ID')
