@@ -207,26 +207,6 @@ async function restoreDataFromJson(jsonString) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// KEEP-ALIVE
-// ---------------------------------------------------------------------------
-http.createServer((req, res) => {
-  if (req.url === '/status') {
-    const data = {
-      online: true,
-      uptime: Date.now() - BOT_START_TIME,
-      ping: client.ws.ping,
-      guilds: client.guilds.cache.size,
-      users: client.users.cache.size
-    };
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify(data));
-  }
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Veri. is running\n');
-}).listen(PORT, () => {
-  console.log(`Web service running on port ${PORT}`);
-});
 
 // ---------------------------------------------------------------------------
 // THEME / EMBED HELPERS
@@ -293,6 +273,82 @@ const client = new Client({
 });
 
 client.commands = new Collection();
+// Simple inline command handlers
+client.commands.set('ping', {
+  async execute(interaction) {
+    await interaction.reply({
+      content: `Pong! WebSocket ping: ${interaction.client.ws.ping}ms`,
+      ephemeral: true
+    });
+  }
+});
+
+client.commands.set('uptime', {
+  async execute(interaction) {
+    const uptime = formatUptime(Date.now() - BOT_START_TIME);
+    await interaction.reply({
+      content: `Veri. has been online for ${uptime}.`,
+      ephemeral: true
+    });
+  }
+});
+
+client.commands.set('help', {
+  async execute(interaction) {
+    await interaction.reply({
+      embeds: [boxEmbed({
+        title: 'Veri. Help',
+        description:
+          'Core commands:\n' +
+          '- `/setup` – initial setup\n' +
+          '- `/admin-panel` – admin controls\n' +
+          '- `/security_score` – show server security\n' +
+          '- `/ping`, `/uptime`, `/help` – diagnostics/info',
+        footer: 'Veri. Help'
+      })],
+      ephemeral: true
+    });
+  }
+});
+
+// Example admin-panel stub
+client.commands.set('admin-panel', {
+  async execute(interaction) {
+    if (!(await canUseVeriCommands(interaction))) {
+      return interaction.reply({ content: 'You cannot use this command.', ephemeral: true });
+    }
+
+    await interaction.reply({
+      embeds: [panelEmbed({
+        title: 'Veri. Admin Panel',
+        description: 'Admin controls will go here.',
+        footer: 'Veri. Security'
+      })],
+      ephemeral: true
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// KEEP-ALIVE (After client creation)
+// ---------------------------------------------------------------------------
+http.createServer((req, res) => {
+  if (req.url === '/status') {
+    const data = {
+      online: true,
+      uptime: Date.now() - BOT_START_TIME,
+      ping: client.ws.ping,
+      guilds: client.guilds.cache.size,
+      users: client.users.cache.size
+    };
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify(data));
+  }
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Veri. is running\n');
+}).listen(PORT, () => {
+  console.log(`Web service running on port ${PORT}`);
+});
 
 // ---------------------------------------------------------------------------
 // SLASH COMMANDS
@@ -1121,6 +1177,7 @@ client.on('guildMemberAdd', async member => {
 // INTERACTIONS
 // ---------------------------------------------------------------------------
 client.on('interactionCreate', async interaction => {
+  try {
 
   // =========================================================================
   // SLASH COMMANDS
@@ -3028,6 +3085,15 @@ client.on('interactionCreate', async interaction => {
       }
     }
   }
+
+  } catch (err) {
+    console.error('Interaction error:', err);
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply('An error occurred.').catch(() => {});
+    } else {
+      await interaction.reply({ content: 'An error occurred.', ephemeral: true }).catch(() => {});
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -3199,12 +3265,19 @@ client.on('messageCreate', async message => {
 // ---------------------------------------------------------------------------
 // CONNECT TO MONGODB, THEN START THE BOT
 // ---------------------------------------------------------------------------
-mongoose.connect(MONGO_URI)
-  .then(() => {
-    console.log('Connected to MongoDB');
-    return client.login(BOT_TOKEN);
-  })
-  .catch(err => {
-    console.error('MongoDB connection error:', err);
+
+// Register slash commands + connect DB + start bot
+(async () => {
+  try {
+    await mongoose.connect(MONGO_URI);
+    console.log('MongoDB connected.');
+
+    await registerCommands();
+    console.log('Slash commands registered.');
+
+    await client.login(BOT_TOKEN);
+  } catch (err) {
+    console.error('Startup error:', err);
     process.exit(1);
-  });
+  }
+})();
