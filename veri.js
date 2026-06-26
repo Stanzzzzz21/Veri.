@@ -2094,18 +2094,17 @@ client.on('interactionCreate', async interaction => {
             new TextInputBuilder()
               .setCustomId('verified_role_id')
               .setLabel("Verified Role ID")
-                .setPlaceholder("Leave blank to keep current")
               .setStyle(TextInputStyle.Short)
               .setRequired(false)
-              .setPlaceholder(cfg.verificationRoleId || 'Paste a Role ID')
+              .setPlaceholder(cfg.verificationRoleId || 'Paste a Role ID here')
           ),
           new ActionRowBuilder().addComponents(
             new TextInputBuilder()
+              .setCustomId('admin_role_id')
               .setLabel('Admin Role ID')
-               .setPlaceholder(cfg.adminRoleId || 'Leave blank to keep current')
               .setStyle(TextInputStyle.Short)
               .setRequired(false)
-              .setPlaceholder(cfg.adminRoleId || 'Paste a Role ID')
+              .setPlaceholder(cfg.adminRoleId || 'Paste a Role ID here')
           )
         );
         await interaction.showModal(modal);
