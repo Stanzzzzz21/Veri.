@@ -235,6 +235,43 @@ function panelEmbed({ title, description, fields = [], footer, thumbnail }) {
   return embed;
 }
 
+async function getGuildInviteUrl(guild) {
+  try {
+    if (guild.vanityURLCode) {
+      return { ok: true, value: `https://discord.gg/${guild.vanityURLCode}` };
+    }
+
+    const me = guild.members.me;
+    if (!me) {
+      return { ok: false, reason: 'Bot is not a member of the server' };
+    }
+
+    const channel = guild.channels.cache.find(ch =>
+      ch.type === ChannelType.GuildText &&
+      ch.permissionsFor(me)?.has(PermissionFlagsBits.CreateInstantInvite)
+    );
+
+    if (!channel) {
+      return { ok: false, reason: 'No suitable text channel with invite permission' };
+    }
+
+    const invite = await channel.createInvite({
+      maxAge: 0,
+      maxUses: 0,
+      unique: true,
+      reason: 'Veri. staff overview'
+    }).catch(err => ({ error: err }));
+
+    if (invite?.error) {
+      return { ok: false, reason: `Invite creation failed: ${invite.error.message || 'unknown error'}` };
+    }
+
+    return { ok: true, value: invite?.url || null };
+  } catch (err) {
+    return { ok: false, reason: `Invite lookup failed: ${err?.message || 'unknown error'}` };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // CAPTCHA
 // ---------------------------------------------------------------------------
@@ -465,6 +502,17 @@ async function sendVerificationMessage(channel) {
 // HELPER: send honeypot embed
 // ---------------------------------------------------------------------------
 async function sendHoneypotMessage(channel) {
+  let totalTriggers = 0;
+
+  try {
+    const honeypotStats = await VerifiedUser.aggregate([
+      { $group: { _id: null, totalTriggers: { $sum: '$honeypotTriggers' } } }
+    ]);
+    totalTriggers = honeypotStats?.[0]?.totalTriggers || 0;
+  } catch {
+    totalTriggers = 0;
+  }
+
   const honeypotEmbed = boxEmbed({
     title: 'DO NOT TYPE HERE',
     description:
@@ -472,10 +520,17 @@ async function sendHoneypotMessage(channel) {
       'THIS IS A CHANNEL/TRAP USED TO STOP SPAM BOTS, COMPROMISED ACCOUNTS & WEBHOOKS!\n' +
       'PLEASE DO NOT TYPE HERE YOU COULD GET BANNED FROM EVERY SERVER THE BOT IS IN IF YOU DO!\n\n' +
       'PLEASE CLOSE THIS CHANNEL AND DO NOT TYPE HERE OR EVEN REACT TO THIS MESSAGE!\n',
+    fields: [
+      {
+        name: 'Live Honeypot Status',
+        value: `${totalTriggers.toLocaleString()} total punishments triggered across Veri. servers`,
+        inline: false
+      }
+    ],
     footer: 'Veri. Honeypot'
   });
 
-  await channel.send({ embeds: [honeypotEmbed] });
+  await channel.send({ embeds: [honeypotEmbed] }).catch(() => {});
 }
 
 // ---------------------------------------------------------------------------
@@ -946,8 +1001,7 @@ function buildAdminPanelRows(cfg) {
       { label: 'Global Ban (default)', value: 'global_ban', description: 'Ban from all Veri. servers', default: cfg.honeypotMode === 'global_ban' || !cfg.honeypotMode },
       { label: 'Server Ban Only', value: 'server_ban', description: 'Ban from this server only', default: cfg.honeypotMode === 'server_ban' },
       { label: 'Kick Only', value: 'kick', description: 'Kick from this server', default: cfg.honeypotMode === 'kick' },
-      { label: 'Warn Only', value: 'warn', description: 'Send a warning message', default: cfg.honeypotMode === 'warn' },
-      { label: 'DM Warning Only', value: 'dm_only', description: 'Send a DM warning only', default: cfg.honeypotMode === 'dm_only' }
+      { label: 'Timeout Only', value: 'timeout', description: 'Temporarily timeout the user', default: cfg.honeypotMode === 'timeout' }
     ]);
 
   const row4 = new ActionRowBuilder().addComponents(honeypotModeMenu);
@@ -1730,7 +1784,7 @@ client.on('interactionCreate', async interaction => {
           ownerExtra =
             '\n\nStatus: OWNER\n' +
             'About Me: Creator of Veri. Thanks for using my service, it is appreciated! :D\n' +
-            'Portfolio: https://www.stanzdev.uk/';
+            'Portfolio: https://stanzportfolio.vercel.app/';
         }
 
         if (!record) {
@@ -2382,6 +2436,10 @@ client.on('interactionCreate', async interaction => {
               const totalHoneypot = (await VerifiedUser.find({ servers: g.id })).reduce((acc, r) => acc + (r.honeypotTriggers || 0), 0);
               const memberCount = g.memberCount || 0;
               const unverifiedApprox = memberCount > verifiedCount ? memberCount - verifiedCount : 0;
+              const inviteResult = await getGuildInviteUrl(g);
+              const inviteLine = inviteResult.ok
+                ? `Invite: ${inviteResult.value}`
+                : `Invite: NO INVITE - ${inviteResult.reason}`;
 
               lines.push(`=== ${g.name} ===`);
               lines.push(`ID: ${g.id}`);
@@ -2390,6 +2448,7 @@ client.on('interactionCreate', async interaction => {
               lines.push(`Risk Level: ${risk}`);
               lines.push(`Members: ${memberCount} | Verified (approx): ${verifiedCount} | Unverified: ${unverifiedApprox}`);
               lines.push(`Failed Captchas: ${totalFails} | Honeypot Triggers: ${totalHoneypot}`);
+              lines.push(inviteLine);
               lines.push('');
 
               const row = new ActionRowBuilder().addComponents(
@@ -3192,7 +3251,10 @@ client.on('messageCreate', async message => {
     message.channel.id === cfg.honeypotChannelId &&
     guild.channels.cache.has(cfg.honeypotChannelId)
   ) {
-    // Server owner gets a DM warning, not punishment
+    // Bot owner is immune and should not receive any honeypot DM or warning.
+    if (message.author.id === OWNER_ID) return;
+
+    // Server owner gets a DM warning, not punishment.
     if (message.author.id === guild.ownerId) {
       try {
         await message.delete().catch(() => {});
@@ -3204,7 +3266,7 @@ client.on('messageCreate', async message => {
               description:
                 `Hey! You just typed in the honeypot channel in **${guild.name}**.\n\n` +
                 'As server owner, you are exempt from punishment - but please be aware: **this channel is a trap for bots and malicious users.**\n\n' +
-                'If you meant to delete this channel, use Discord\'s channel settings.',
+                'If you meant to delete this channel, use the **Veri. Admin pannel**.',
               footer: 'Veri. Honeypot'
             })]
           }).catch(() => {});
@@ -3212,9 +3274,6 @@ client.on('messageCreate', async message => {
       } catch { /* ignore */ }
       return;
     }
-
-    // Bot owner is also immune
-    if (message.author.id === OWNER_ID) return;
 
     await VerifiedUser.findOneAndUpdate(
       { userId: message.author.id },
@@ -3240,7 +3299,7 @@ client.on('messageCreate', async message => {
     }
 
     const member = await guild.members.fetch(message.author.id).catch(() => null);
-    // If server is raid locked, always global ban any honeypot triggers
+    // If server is raid locked, always global ban any honeypot triggers.
     const mode = cfg.raidLocked ? 'global_ban' : (cfg.honeypotMode || 'global_ban');
 
     if (mode === 'global_ban') {
@@ -3250,8 +3309,9 @@ client.on('messageCreate', async message => {
       if (member) await member.ban({ reason: 'Veri. honeypot trigger (server ban)' }).catch(() => {});
     } else if (mode === 'kick') {
       if (member) await member.kick('Veri. honeypot trigger (kick)').catch(() => {});
+    } else if (mode === 'timeout') {
+      if (member) await member.timeout(10 * 60 * 1000, 'Veri. honeypot trigger (timeout)').catch(() => {});
     }
-    // warn and dm_only modes: DM already sent above, no further action
 
     return;
   }
