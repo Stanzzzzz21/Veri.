@@ -212,6 +212,7 @@ async function restoreDataFromJson(jsonString) {
 // THEME / EMBED HELPERS
 // ---------------------------------------------------------------------------
 const THEME_COLOR = 0x00c853;
+const honeypotMessageCache = new Map();
 
 function boxEmbed({ title, description, fields = [], footer }) {
   const embed = new EmbedBuilder()
@@ -502,6 +503,8 @@ async function sendVerificationMessage(channel) {
 // HELPER: send honeypot embed
 // ---------------------------------------------------------------------------
 async function sendHoneypotMessage(channel) {
+  if (!channel) return null;
+
   let totalTriggers = 0;
 
   try {
@@ -530,7 +533,19 @@ async function sendHoneypotMessage(channel) {
     footer: 'Veri. Honeypot'
   });
 
-  await channel.send({ embeds: [honeypotEmbed] }).catch(() => {});
+  const cachedMessageId = honeypotMessageCache.get(channel.id);
+  if (cachedMessageId) {
+    const existingMessage = await channel.messages.fetch(cachedMessageId).catch(() => null);
+    if (existingMessage) {
+      await existingMessage.edit({ embeds: [honeypotEmbed] }).catch(() => {});
+      return existingMessage;
+    }
+    honeypotMessageCache.delete(channel.id);
+  }
+
+  const sentMessage = await channel.send({ embeds: [honeypotEmbed] }).catch(() => null);
+  if (sentMessage) honeypotMessageCache.set(channel.id, sentMessage.id);
+  return sentMessage;
 }
 
 // ---------------------------------------------------------------------------
@@ -3280,6 +3295,13 @@ client.on('messageCreate', async message => {
       { $inc: { honeypotTriggers: 1 } },
       { upsert: true }
     );
+
+    const honeypotChannel = cfg.honeypotChannelId
+      ? guild.channels.cache.get(cfg.honeypotChannelId)
+      : null;
+    if (honeypotChannel) {
+      await sendHoneypotMessage(honeypotChannel);
+    }
 
     await sendLog(guild, 'Veri. Honeypot Triggered', `User ${message.author.id} sent a message in the honeypot channel.`);
     await message.delete().catch(() => {});
